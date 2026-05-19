@@ -77,4 +77,11 @@ using st_32x16_s = ducks::st_shape::st_32x16;
 using st_8x32_s = ducks::st_shape::st_8x32;
 using st_16x128_s = ducks::st_shape::st_16x128;
 
+#ifdef KITTENS_UDNA1
+// gfx1250 shared tile shapes
+using st_16x32_nosz_s    = ducks::st_shape::st_16x32_nosz;
+template<int I=128, int A=8>
+using st_16x32_padded_s  = ducks::st_shape::st_16x32_padded<I, A>;
+#endif
+
 }
