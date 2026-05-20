@@ -159,40 +159,53 @@ __device__ __forceinline__ void fence() {
     wait_ds<0>();
 }
 
-/* ----------  LDS BARRIER CELLS (FOR TDM AUTO-ARRIVE)  ---------- */
+/* ----------  LDS BARRIER CELLS (FOR TDM / ASYNC ARRIVE)  ---------- */
 //
-// gfx1250 hosts a 64-bit barrier cell in LDS (per the gfx1250 spec):
-//   bits  0..31  pending count   (decrements on arrive)
-//   bit      32  phase           (flips when pending reaches 0)
-//   bits 33..63  init count      (reload value at phase flip)
+// 64-bit LDS-resident barrier cell, per SP3 section 9.8.13
+// (DS_ATOMIC_ASYNC_BARRIER_ARRIVE_B64). The cell is packed as:
 //
-// A TDM descriptor can set `atomic_barrier_enable` + `atomic_barrier_address`
-// so the hardware emits `DS_ATOMIC_ASYNC_BARRIER_ARRIVE_B64` on completion.
-// The consumer then waits on the cell's phase flip instead of draining the
-// global `tensorcnt`.
+//   bits 63..48 : reserved (zero)
+//   bits 47..32 : init_count        (reload value at phase flip)
+//   bits 31..0  : bar_state, itself packed as [phase | pending_count]
+//                 with the WIDTH boundary at bit 16:
+//                   bits 31..16 : phase            (counter, parity alternates)
+//                   bits 15..0  : pending_count
+//
+// Each arrive subtracts 1 from bar_state. When pending rolls under (its
+// MSB becomes 1), the hardware reloads bar_state to
+//   (new_phase << 16) | init_count
+// and wakes any wave sleeping on the cell.
+//
+// To expect N arrivals per phase: pending starts at N-1 and init_count is
+// N-1. Phase decrements per flip, so its LSB alternates 0,1,0,1... -- the
+// classic parity-flip pattern.
 
 /**
  * @brief 64-bit LDS barrier cell.
  *
- * Allocate one (or more) as `__shared__ kittens::sync::barrier_lds bar;`
- * and prime once with `init_barrier(&bar.state, count)` before any
- * `load_tdm_arrive` referencing this cell. `count` is the number of arrivals
- * required to flip the phase.
+ * Allocate as `__shared__ kittens::sync::barrier_lds bar;` and prime once
+ * with `init_barrier(&bar.state, count)` before any arrive. `count` is the
+ * number of arrivals required to flip the phase.
  */
 struct alignas(8) barrier_lds { uint64_t state; };
 
 /// @brief Initialize an LDS barrier cell to expect `count` arrivals per phase.
 __device__ __forceinline__ void init_barrier(uint64_t* bar, uint32_t count) {
-    *bar = uint64_t(count) | (uint64_t(count) << 33);
+    // pending = count - 1, phase = 0, init_count = count - 1.
+    const uint32_t pending  = count - 1;
+    const uint32_t init_cnt = count - 1;
+    *bar =  uint64_t(pending  & 0xFFFFu)            // bits 15..0  pending
+         | (uint64_t(0)                  << 16)    // bits 31..16 phase = 0
+         | (uint64_t(init_cnt & 0xFFFFu) << 32);   // bits 47..32 init_count
 }
 
 /**
- * @brief Block on `bar` until its phase bit matches `expected_phase`.
+ * @brief Block on `bar` until its phase LSB matches `expected_phase`.
  *
- * The hardware can wake sleeping waves on a phase flip; `s_sleep 1` yields
- * the SIMD between polls so this is not a busy spin. Callers maintain a
- * parity bit per barrier and pass `expected_phase = (phase ^= 1)` each
- * time they wait.
+ * Phase decrements once per flip, so its low bit alternates 0,1,0,1...
+ * Callers maintain a parity bit per barrier and pass it inverted before
+ * each wait (`expected = (phase ^= 1)`). The hardware wakes sleeping
+ * waves on phase flip; `s_sleep 1` yields the SIMD between polls.
  */
 __device__ __forceinline__ void wait_barrier(uint64_t* bar, int expected_phase) {
     const uint32_t lds_addr = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(bar));
@@ -200,7 +213,10 @@ __device__ __forceinline__ void wait_barrier(uint64_t* bar, int expected_phase) 
         uint64_t v;
         asm volatile("ds_load_b64 %0, %1 offset:0"
             : "=v"(v) : "v"(lds_addr) : "memory");
-        if (int((v >> 32) & 1) == expected_phase) break;
+        // Phase lives in the high 16 bits of the low 32-bit bar_state.
+        const uint32_t bar_state = static_cast<uint32_t>(v);
+        const int phase_lsb = int((bar_state >> 16) & 1);
+        if (phase_lsb == expected_phase) break;
         __builtin_amdgcn_s_sleep(1);
     }
 }

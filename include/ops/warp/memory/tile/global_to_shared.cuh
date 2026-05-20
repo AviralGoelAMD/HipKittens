@@ -650,8 +650,11 @@ __device__ __forceinline__ void build_tdm_d_2d(
     constexpr uint32_t pad_amt_enc  = (Pad::amount > 0)
         ? ( (Pad::amount * sizeof(T) / 4) - 1 ) : 0;
 
-    // atomic_barrier_enable lives at bit 21 of group 1 word 0.
-    const uint32_t atomic_bar_enable = (bar_lds_addr != 0) ? (1u << 21) : 0u;
+    // atomic_barrier_enable lives at bit 18 of group 1 word 0
+    // (per the MI400 TDM D# layout: w0 = multicast_mask[15:0],
+    // data_size[17:16], atomic_barrier_enable[18], iterate_enable[19],
+    // pad_enable[20], pad_interval[24:22], pad_amount[31:25]).
+    const uint32_t atomic_bar_enable = (bar_lds_addr != 0) ? (1u << 18) : 0u;
 
     uint32_t w0 = (data_size_enc << 16)
                 | (pad_enable    << 20)
@@ -722,12 +725,15 @@ __device__ inline void load_tdm(T* __restrict__ lds_dst, const GL& src, const CO
  * before the first call referencing it. `count` is the number of
  * `load_tdm_arrive` invocations that target this barrier per phase.
  *
- * @note The D# bit positions for `atomic_barrier_enable` (currently encoded
- * at `w0` bit 21) and `atomic_barrier_address` (currently `w1[15:0]`) are
- * derived from the public field summary in the architecture overview; the
- * exact placement should be cross-checked against the SP3 reference before
- * relying on this path in production. A `gemm_tdm_arrive` smoke kernel is
- * provided to exercise the round-trip once the encoding is confirmed.
+ * @note The D# bit positions for `atomic_barrier_enable` (`w0` bit 18) and
+ * `atomic_barrier_address` (`w1[15:0]`) match the field table documented
+ * in the Triton AMD backend (third_party/amd/lib/TritonAMDGPUToLLVM/
+ * TDMUtility.cpp lines 224-264). The Triton lowering itself does not use
+ * the D# auto-arrive path -- it follows `load_tdm` with an explicit
+ * `wait_tensor()` + `async_barrier_arrive()` sequence (see
+ * `gemm_tdm_arrive.cpp` for that pattern). This overload is provided for
+ * runtimes that model TDM auto-arrive natively; on simulators that don't,
+ * use the explicit-arrive pattern instead.
  *
  * @param bar  Pointer to a 64-bit LDS barrier counter (a `sync::barrier_lds`
  *             cell). Must point at LDS storage; must be 8-byte aligned.

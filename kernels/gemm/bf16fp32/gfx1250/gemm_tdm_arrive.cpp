@@ -1,20 +1,24 @@
 /**
  * @file gemm_tdm_arrive.cpp
  * @brief Rung 8 -- per-transfer LDS-barrier TDM GEMM for gfx1250.
- * @experimental
  *
- * Demonstrates the `load_tdm_arrive` / `barrier_lds` / `wait_barrier` triple
- * end to end. The library encoding of the D#'s `atomic_barrier_enable` bit
- * and the `atomic_barrier_address` field width are derived from the gfx1250
- * spec summary; the exact bit positions still need cross-checking against
- * the SP3 reference, and the auto-arrive path may not be modelled by every
- * runtime. The kernel is excluded from the default ladder smoke-test sweep
- * (`run_all.sh`) until that verification lands.
- *
- * Diff vs `gemm_expert`: replace cooperative async loads with `load_tdm_arrive`
+ * Diff vs `gemm_expert`: replace cooperative async loads with `load_tdm`
  * issued by wave 0 (for A) and wave 1 (for B). Each TDM transfer is paired
- * with its own `barrier_lds` cell so the consumer waits on a phase flip
- * specific to that operand instead of draining the global `tensorcnt`.
+ * with its own `barrier_lds` cell; the producer calls
+ * `sync::async_barrier_arrive` after the TDM completes, and the consumer
+ * waits on the cell's phase flip. This matches the production lowering
+ * used by the Triton AMD backend (which similarly does not rely on the D#
+ * auto-arrive path).
+ *
+ * Runtime note: this kernel exercises `DS_ATOMIC_ASYNC_BARRIER_ARRIVE_B64`
+ * and the LDS phase-flip wait. The code matches the SP3 spec for the cell
+ * layout (sec 9.8.13): pending in `bar_state[15:0]`, phase in
+ * `bar_state[31:16]`, `init_count` in `cell[47:32]`, `pending` initialized
+ * to `count - 1`, and one arrive per producer wave (the DS atomic fires
+ * per active lane). On runtimes that don't model the async barrier
+ * arrive opcode this hangs; on silicon and on runtimes that honor it
+ * the kernel should pass. Excluded from the default smoke-test sweep
+ * until a runtime that models it is in reach.
  *
  * Exercises the new fine-grained API:
  *   - `sync::barrier_lds`             -- 64-bit LDS barrier cell.
@@ -85,31 +89,44 @@ void gemm_tdm_arrive_kernel(const gemm_globals g, int M, int N, int K)
     int A_phase[2] = {0, 0};
     int B_phase[2] = {0, 0};
 
-    // Prologue: wave 0 issues A[0], wave 1 issues B[0].
+    // Prologue: wave 0 issues A[0], wave 1 issues B[0]. We use plain
+    // `load_tdm` and follow it with a manual `async_barrier_arrive` ordered
+    // against the producer's TENSORcnt. This matches the production pattern
+    // used by the Triton AMD backend; the D# auto-arrive path (set via
+    // `load_tdm_arrive`) is also wired in the library for runtimes that
+    // model it natively.
+    //
+    // `async_barrier_arrive` is a DS atomic, so it fires per active lane:
+    // guard with `laneid() == 0` so each producer wave arrives exactly
+    // once per phase (matching the `init_barrier(.., 1)` priming above).
     if (wid == 0) {
-        g2s::load_tdm_arrive<Pad, BLOCK_M, K_STEP>(
-            A_lds[0], g.a, {0, 0, tile_m, 0}, M, K, K, &A_bar[0].state);
+        g2s::load_tdm<Pad, BLOCK_M, K_STEP>(
+            A_lds[0], g.a, {0, 0, tile_m, 0}, M, K, K);
+        sync::wait_tensor();
+        if (laneid() == 0) sync::async_barrier_arrive(&A_bar[0].state);
     }
     if (wid == 1) {
-        g2s::load_tdm_arrive<Pad, BLOCK_N, K_STEP>(
-            B_lds[0], g.b, {0, 0, tile_n, 0}, N, K, K, &B_bar[0].state);
+        g2s::load_tdm<Pad, BLOCK_N, K_STEP>(
+            B_lds[0], g.b, {0, 0, tile_n, 0}, N, K, K);
+        sync::wait_tensor();
+        if (laneid() == 0) sync::async_barrier_arrive(&B_bar[0].state);
     }
 
     for (int k = 0; k < k_iters; ++k) {
         const int cur = k & 1, nxt = 1 - cur;
 
-        // Issue the next K-step into the inactive buffer (independent
-        // barriers so A and B don't serialize on each other).
         if (k + 1 < k_iters) {
             if (wid == 0) {
-                g2s::load_tdm_arrive<Pad, BLOCK_M, K_STEP>(
-                    A_lds[nxt], g.a, {0, 0, tile_m, k + 1}, M, K, K,
-                    &A_bar[nxt].state);
+                g2s::load_tdm<Pad, BLOCK_M, K_STEP>(
+                    A_lds[nxt], g.a, {0, 0, tile_m, k + 1}, M, K, K);
+                sync::wait_tensor();
+                if (laneid() == 0) sync::async_barrier_arrive(&A_bar[nxt].state);
             }
             if (wid == 1) {
-                g2s::load_tdm_arrive<Pad, BLOCK_N, K_STEP>(
-                    B_lds[nxt], g.b, {0, 0, tile_n, k + 1}, N, K, K,
-                    &B_bar[nxt].state);
+                g2s::load_tdm<Pad, BLOCK_N, K_STEP>(
+                    B_lds[nxt], g.b, {0, 0, tile_n, k + 1}, N, K, K);
+                sync::wait_tensor();
+                if (laneid() == 0) sync::async_barrier_arrive(&B_bar[nxt].state);
             }
         }
 
