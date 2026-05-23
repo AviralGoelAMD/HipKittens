@@ -154,6 +154,7 @@ __device__ __forceinline__ void wait_tensor() {
  * Convenience for the common "producer side" pattern: ensure all in-flight
  * loads have settled into LDS before signalling consumers.
  */
+// Drains loadcnt + dscnt only — does not wait on store, async, or tensor counters.
 __device__ __forceinline__ void fence() {
     wait_load<0>();
     wait_ds<0>();
