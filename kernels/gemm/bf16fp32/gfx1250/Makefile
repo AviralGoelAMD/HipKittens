@@ -39,11 +39,13 @@ VERIFY ?= 1
 
 .PHONY: ladder run clean all
 
+HK_HEADERS := $(shell find $(KITTENS_ROOT)/include -name '*.cuh' 2>/dev/null)
+
 # Default target: build the currently selected KERNEL.
-$(BIN): $(SRC) harness.h common.h
+$(BIN): $(SRC) harness.h common.h $(HK_HEADERS)
 	$(HIPCXX) $(HIPFLAGS) $(CXXFLAGS) $(CPPFLAGS) -DHARNESS_MAIN $(SRC) -o $(BIN)
 
-all: $(BIN)
+all: ladder
 
 # Loop variant -- `make ladder` rebuilds every rung.
 ladder:
