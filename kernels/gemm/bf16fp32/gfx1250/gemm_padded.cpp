@@ -13,6 +13,7 @@
 using namespace kittens;
 using namespace gfx1250_gemm;
 
+// Pad type must match between load_async (write) and load_b128 (read).
 using Pad = lds_pad_default;
 constexpr int A_ELEMS_PAD = Pad::padded_elems(BLOCK_M * K_STEP);
 constexpr int B_ELEMS_PAD = Pad::padded_elems(BLOCK_N * K_STEP);

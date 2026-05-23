@@ -461,6 +461,12 @@ struct lds_nopad {
 };
 
 /// @brief Default LDS padding for bf16 GEMMs on gfx1250.
+/// Derivation: gfx1250 LDS has 32 banks, 4 bytes wide. A 16x32 bf16 subtile
+/// row is 32 * 2 = 64 bytes = 16 banks. Two consecutive rows hit the same 16
+/// banks → 2-way conflict on ds_load_b128. Padding by 8 bf16 (16 bytes = 4
+/// banks) shifts each row's bank mapping, eliminating conflicts.
+/// Interval 128 = one subtile row (128 bf16 = 256 bytes). Must be power-of-2
+/// for D# encoding (see SR-09 static_assert).
 using lds_pad_default = lds_padded<128, 8>;
 
 namespace g2s {
