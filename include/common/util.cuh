@@ -201,7 +201,7 @@ __device__ static inline T packed_shfl_down(uint64_t mask, const T &f, int delta
                                        *reinterpret_cast<const __hip_bfloat16*>(&f)};
         }
 
-        u.ui = __shfl_down_sync<unsigned long long, unsigned int>(mask, u.ui, delta, 64);
+        u.ui = __shfl_down_sync<unsigned long long, unsigned int>(mask, u.ui, delta, WARP_THREADS);
         if constexpr (std::is_same_v<T, bf16>) {
             return *reinterpret_cast<const T*>(&u.bf162.x);  // Extract single bf16 from the .x component
         } else {
