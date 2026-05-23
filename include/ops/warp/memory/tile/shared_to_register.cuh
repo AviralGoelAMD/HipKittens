@@ -753,10 +753,9 @@ __device__ inline void load_b128(
                 reinterpret_cast<uintptr_t>(warp_lds_base + padded_off));
 
             float4 lo, hi;
-            asm volatile("ds_load_b128 %0, %1 offset:0\n"
-                : "=v"(lo) : "v"(addr) : "memory");
-            asm volatile("ds_load_b128 %0, %1 offset:16\n"
-                : "=v"(hi) : "v"(addr) : "memory");
+            asm volatile("ds_load_b128 %0, %2 offset:0\n"
+                         "ds_load_b128 %1, %2 offset:16\n"
+                : "=v"(lo), "=v"(hi) : "v"(addr) : "memory");
 
             bf16_2* lo_p = reinterpret_cast<bf16_2*>(&lo);
             bf16_2* hi_p = reinterpret_cast<bf16_2*>(&hi);
