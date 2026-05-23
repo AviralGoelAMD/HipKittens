@@ -649,6 +649,9 @@ __device__ __forceinline__ void build_tdm_d_2d(
                                      : (sizeof(T) == 4) ? 2
                                      : 3;
     constexpr uint32_t pad_enable   = (Pad::interval > 0) ? 1u : 0u;
+    static_assert(Pad::interval == 0 ||
+                  __builtin_popcount(Pad::interval * sizeof(T) / 4) == 1,
+                  "Pad interval in DWords must be a power of 2 for D# encoding");
     constexpr uint32_t pad_int_enc  = (Pad::interval > 0)
         ? ( __builtin_ctz(Pad::interval * sizeof(T) / 4) ) : 0;
     constexpr uint32_t pad_amt_enc  = (Pad::amount > 0)
