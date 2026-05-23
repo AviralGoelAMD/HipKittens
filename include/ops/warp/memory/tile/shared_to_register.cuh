@@ -709,6 +709,10 @@ namespace detail {
 inline constexpr int GFX1250_SUB_ROWS  = 16;
 inline constexpr int GFX1250_SUB_COLS  = 32;
 inline constexpr int GFX1250_SUB_ELEMS = GFX1250_SUB_ROWS * GFX1250_SUB_COLS;
+
+__device__ __forceinline__ int gfx1250_lane_offset(int sub_id, int row, int half) {
+    return sub_id * GFX1250_SUB_ELEMS + row * GFX1250_SUB_COLS + half * 16;
+}
 } // namespace detail
 
 /**
@@ -744,10 +748,7 @@ __device__ inline void load_b128(
         #pragma unroll
         for (int tj = 0; tj < width; tj++) {
             const int sub_id     = ti * subs_per_row + tj;
-            const int base_flat  = sub_id * detail::GFX1250_SUB_ELEMS
-                                 + row * detail::GFX1250_SUB_COLS
-                                 + half * 16;
-            const int padded_off = Pad::padded(base_flat);
+            const int padded_off = Pad::padded(detail::gfx1250_lane_offset(sub_id, row, half));
 
             const uint32_t addr = static_cast<uint32_t>(
                 reinterpret_cast<uintptr_t>(warp_lds_base + padded_off));
@@ -797,13 +798,10 @@ __device__ inline void load_b32(
     for (int ti = 0; ti < height; ti++) {
         #pragma unroll
         for (int tj = 0; tj < width; tj++) {
-            const int sub_id    = ti * subs_per_row + tj;
-            const int base_flat = sub_id * detail::GFX1250_SUB_ELEMS
-                                + row * detail::GFX1250_SUB_COLS
-                                + half * 16;
+            const int sub_id = ti * subs_per_row + tj;
 
             const bf16_2* lds_p = reinterpret_cast<const bf16_2*>(
-                warp_lds_base + base_flat);
+                warp_lds_base + detail::gfx1250_lane_offset(sub_id, row, half));
 
             #pragma unroll
             for (int k = 0; k < 8; k++) {
