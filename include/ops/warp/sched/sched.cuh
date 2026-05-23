@@ -106,6 +106,25 @@ __device__ __forceinline__ void sleep() {
 }
 
 /**
+ * @brief Wake all sleeping waves in this workgroup.
+ *
+ * Lowers to `s_wakeup`. Use after a producer finishes work to wake consumer
+ * waves that are polling in `wait_barrier` via `s_sleep`.
+ */
+__device__ __forceinline__ void wakeup() {
+    asm volatile("s_wakeup" ::: "memory");
+}
+
+/**
+ * @brief Sleep the wave for a runtime-variable number of cycles.
+ *
+ * Lowers to `s_sleep_var`. Duration = SGPR[6:0] * 64 cycles.
+ */
+__device__ __forceinline__ void sleep_var(unsigned cycles_div64) {
+    asm volatile("s_sleep_var %0" :: "s"(cycles_div64));
+}
+
+/**
  * @brief Compiler-only scheduling fence.
  *
  * Tells the LLVM scheduler not to reorder instructions across this point
