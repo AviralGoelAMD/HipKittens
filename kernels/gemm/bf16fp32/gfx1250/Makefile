@@ -54,5 +54,9 @@ ladder:
 run: $(BIN)
 	./$(BIN) $(M) $(N) $(K) $(ITERS) $(VERIFY)
 
+isa: $(SRC) harness.h common.h $(HK_HEADERS)
+	$(HIPCXX) $(HIPFLAGS) $(CXXFLAGS) $(CPPFLAGS) -DHARNESS_MAIN --save-temps $(SRC) -o $(BIN)
+	@echo "ISA: $(KERNEL)-hip-amdgcn-amd-amdhsa-gfx1250.s"
+
 clean:
 	rm -f *.out
