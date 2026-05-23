@@ -50,13 +50,13 @@ void gemm_expert_kernel(const gemm_globals g, int M, int N, int K)
     for (int k = 0; k < k_iters; ++k) {
         const int cur = k & 1, nxt = 1 - cur;
 
+        kittens::sync::arrive(); // signal before async loads — nxt != cur, no conflict
         if (k + 1 < k_iters) {
             kittens::g2s::load_async<Pad, BLOCK_M, K_STEP, NUM_THREADS>(
                 A_lds[nxt], g.a, {0, 0, tile_m, k + 1}, K);
             kittens::g2s::load_async<Pad, BLOCK_N, K_STEP, NUM_THREADS>(
                 B_lds[nxt], g.b, {0, 0, tile_n, k + 1}, K);
         }
-        kittens::sync::arrive();
 
         rt_bf<WARP_M, K_STEP, row_l, rt_16x32_s> A_reg;
         rt_bf<WARP_N, K_STEP, row_l, rt_16x32_s> B_reg;
