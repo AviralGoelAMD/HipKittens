@@ -59,8 +59,10 @@ void gemm_async_kernel(const gemm_globals g, int M, int N, int K)
         kittens::sync::wait_ds();
         mma_ABt(C_acc, A_reg, B_reg, C_acc);
 
-        kittens::sync::wait_async();
-        kittens::sync::sync();
+        if (k + 1 < k_iters) { // skip on last iter — no next load issued
+            kittens::sync::wait_async();
+            kittens::sync::sync();
+        }
     }
 
     bf16* c_base = reinterpret_cast<bf16*>(&g.c[{0, 0, 0, 0}]);

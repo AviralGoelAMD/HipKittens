@@ -69,7 +69,7 @@ void gemm_expert_kernel(const gemm_globals g, int M, int N, int K)
         kittens::sync::wait_ds();
         mma_ABt_burst(C_acc, A_reg, B_reg, C_acc);
 
-        kittens::sync::wait_async();
+        if (k + 1 < k_iters) kittens::sync::wait_async(); // skip on last iter — no next load issued
     }
 
     bf16* c_base = reinterpret_cast<bf16*>(&g.c[{0, 0, 0, 0}]);

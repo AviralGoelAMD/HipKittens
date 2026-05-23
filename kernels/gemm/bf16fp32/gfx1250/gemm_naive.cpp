@@ -54,7 +54,7 @@ void gemm_naive_kernel(const gemm_globals g, int M, int N, int K)
         kittens::sync::wait_ds();
         mma_ABt(C_acc, A_reg, B_reg, C_acc);
 
-        kittens::sync::sync();
+        if (k + 1 < k_iters) kittens::sync::sync(); // skip on last iter — no next overwrite
     }
 
     bf16* c_base = reinterpret_cast<bf16*>(&g.c[{0, 0, 0, 0}]);
