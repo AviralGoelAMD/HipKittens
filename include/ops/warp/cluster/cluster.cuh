@@ -44,14 +44,14 @@ __device__ __host__ __forceinline__ constexpr uint32_t mask(
 }
 
 /**
- * @brief Cluster-wide split barrier.
+ * @brief Cluster-wide barrier (signal + wait on cluster user barrier -3).
  *
- * Outside a CGA cluster this lowers to a workgroup-wide `sync::sync()`. Inside
- * a cluster the same `s_barrier_signal -1 / s_barrier_wait -1` pair extends to
- * every workgroup in the cluster by hardware-managed forwarding.
+ * Barrier -3 syncs across all workgroups in a CGA cluster.
+ * Outside a cluster, use `sync::sync()` (barrier -1, workgroup-only).
  */
 __device__ __forceinline__ void sync() {
-    ::kittens::sync::sync();
+    __builtin_amdgcn_s_barrier_signal(-3);
+    __builtin_amdgcn_s_barrier_wait(-3);
 }
 
 } // namespace cluster
