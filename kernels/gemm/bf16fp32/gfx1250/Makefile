@@ -28,7 +28,8 @@ HIPFLAGS := -DKITTENS_UDNA1 \
 
 CXX_STD  := c++20
 CPPFLAGS += -I$(KITTENS_ROOT)/include -I$(HIP_INCLUDE_DIR)
-CXXFLAGS += -std=$(CXX_STD) -O3 -w
+CXXFLAGS += -std=$(CXX_STD) -O3 -Wall -Wno-unused-variable -Wno-unused-local-typedef \
+            -Wno-duplicate-decl-specifier -Wno-unused-value -Wno-pass-failed
 
 M ?= 256
 N ?= 256
