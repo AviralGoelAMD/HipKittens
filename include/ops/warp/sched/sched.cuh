@@ -28,14 +28,15 @@ namespace sched {
  *                as experimental / unsafe by default.
  */
 enum class mode : int {
-    normal  = 0,
-    full    = 1,
-    limited = 2,
+    normal          = 0,
+    full            = 1,
+    limited         = 2,
+    limited_nostall = 2 | (1 << 4), // limited + DISABLE_VALU_STALL (bit[4])
 };
 
-// `s_setreg_b32 hwreg(MODE_REG=1, offset=4, size=2), value`
-// Encoded simm16 = 1 | (4 << 6) | ((2-1) << 11) = 2305.
-constexpr int SCHED_MODE_HWREG_SIMM16 = 1 | (4 << 6) | (1 << 11);
+// `s_setreg_b32 hwreg(MODE_REG=1, offset=4, size=5), value`
+// 5 bits to cover bits [4:0] of SCHED_MODE (including DISABLE_VALU_STALL at bit[4]).
+constexpr int SCHED_MODE_HWREG_SIMM16 = 1 | (4 << 6) | ((5 - 1) << 11);
 
 /**
  * @brief Set the wave's SCHED_MODE to `m`.
