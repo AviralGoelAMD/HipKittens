@@ -124,7 +124,7 @@ __device__ static inline void mfma323232(      float2 (&D)[8],
     typedef __attribute__((__vector_size__(8 * sizeof(__bf16)))) __bf16 bf16x8_t;
     typedef __attribute__((__vector_size__(16 * sizeof(float)))) float floatx16_t;
     
-    *(floatx16_t*)C = __builtin_amdgcn_mfma_f32_32x32x16_bf16(
+    floatx16_t acc = __builtin_amdgcn_mfma_f32_32x32x16_bf16(
         *(bf16x8_t*)A,
         *(bf16x8_t*)B,
         *(floatx16_t*)C,
@@ -134,7 +134,7 @@ __device__ static inline void mfma323232(      float2 (&D)[8],
     *(floatx16_t*)D = __builtin_amdgcn_mfma_f32_32x32x16_bf16(
         *(bf16x8_t*)(A + 4),
         *(bf16x8_t*)(B + 4),
-        *(floatx16_t*)C,
+        acc,
         0, 0, 0
     );
 }
