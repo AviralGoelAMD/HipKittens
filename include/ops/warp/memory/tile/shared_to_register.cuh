@@ -729,6 +729,8 @@ __device__ inline void load_b128(
     rt_bf<WARP_M, WARP_K, ducks::rt_layout::row, ducks::rt_shape::rt_16x32>& dst,
     const bf16* __restrict__ warp_lds_base)
 {
+    static_assert(Pad::amount == 0 || Pad::amount * sizeof(bf16) % 16 == 0,
+                  "Pad amount must be a multiple of 16 bytes for ds_load_b128 alignment");
     constexpr int height       = WARP_M / detail::GFX1250_SUB_ROWS;
     constexpr int width        = WARP_K / detail::GFX1250_SUB_COLS;
     constexpr int subs_per_row = WARP_K / detail::GFX1250_SUB_COLS;
