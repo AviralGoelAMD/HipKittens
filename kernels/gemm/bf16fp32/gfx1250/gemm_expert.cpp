@@ -38,7 +38,7 @@ void gemm_expert_kernel(const gemm_globals g, int M, int N, int K)
     const int warp_c  = wid % WARPS_N;
     const int k_iters = K / K_STEP;
 
-    kittens::sched::expert _sched;     // limited expert mode, off in dtor
+    kittens::sched::expert _sched; // covers entire kernel — compiler reorders s_setreg if scoped tighter
 
     kittens::g2s::load_async<Pad, BLOCK_M, K_STEP, NUM_THREADS>(
         A_lds[0], g.a, {0, 0, tile_m, 0}, K);
