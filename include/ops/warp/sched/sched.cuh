@@ -130,6 +130,12 @@ __device__ __forceinline__ void sleep_var(unsigned cycles_div64) {
  * Tells the LLVM scheduler not to reorder instructions across this point
  * but emits no hardware op. Useful when constraining the compiler's WMMA
  * burst grouping without paying a runtime barrier.
+ *
+ * WMMA co-execution note: each WMMA takes 16 cycles. During this time, the
+ * SIMD can issue up to 8 independent VALU ops for free (1 per 2 cycles).
+ * Place address computation, format conversion, or accumulator scaling
+ * between WMMA instructions to exploit this. The compiler does this
+ * automatically when independent work is available in the same basic block.
  */
 __device__ __forceinline__ void compiler_fence() {
     __builtin_amdgcn_sched_barrier(0);
