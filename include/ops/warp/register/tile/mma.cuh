@@ -220,12 +220,24 @@ __device__ static inline void mma_AB_base(rt_base<float, ducks::rt_layout::col, 
     constexpr int B_stride = B_shape::stride;
     static_assert(A_stride == B_stride, "A and B must have the same stride");
     
-    if constexpr (std::is_same_v<D_shape, typename ducks::rt_shape::rt_16x16> && 
+#ifdef KITTENS_UDNA1
+    // gfx1250 WMMA always computes A × B_input^T. For mma_AB, B is col-major,
+    // so B_input^T = B_row = the non-transposed view. Same WMMA instruction.
+    if constexpr (std::is_same_v<D_shape, typename ducks::rt_shape::rt_16x16> &&
+                  A_rows == 16 && A_cols == 32 &&
+                  B_rows == 32 && B_cols == 16 &&
+                  std::is_same_v<C_shape, typename ducks::rt_shape::rt_16x16>) {
+        wmma161632<false, false>(d.data, a.data, b.data, c.data);
+    } else {
+        static_assert(false, "Unsupported shape combination for gfx1250 mma_AB_base");
+    }
+#else
+    if constexpr (std::is_same_v<D_shape, typename ducks::rt_shape::rt_16x16> &&
                   A_rows == 16 && A_cols == 32 &&
                   B_rows == 32 && B_cols == 16 &&
                   std::is_same_v<C_shape, typename ducks::rt_shape::rt_16x16>) {
         mfma161632(d.data, a.data, b.data, c.data);
-    } else if constexpr (std::is_same_v<D_shape, typename ducks::rt_shape::rt_32x32> && 
+    } else if constexpr (std::is_same_v<D_shape, typename ducks::rt_shape::rt_32x32> &&
                   A_rows == 32 && A_cols == 16 &&
                   B_rows == 16 && B_cols == 32 &&
                   std::is_same_v<C_shape, typename ducks::rt_shape::rt_32x32>) {
@@ -233,6 +245,7 @@ __device__ static inline void mma_AB_base(rt_base<float, ducks::rt_layout::col, 
     } else {
         static_assert(false, "Unsupported shape combination");
     }
+#endif
 }
 
 /**

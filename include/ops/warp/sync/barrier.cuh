@@ -160,6 +160,54 @@ __device__ __forceinline__ void fence() {
     wait_ds<0>();
 }
 
+/* ----------  NAMED BARRIERS (IDs 1-16)  ---------- */
+//
+// Hardware-managed subset-of-waves barriers. Unlike the workgroup barrier (-1)
+// which syncs ALL waves, a named barrier only syncs waves that have JOINed it.
+// Waves can be a member of at most one named barrier at a time.
+//
+// Usage pattern:
+//   1. One wave per barrier calls init_named(id, member_count)
+//   2. All participating waves call join(id)
+//   3. Sync via signal(id) + wait(id)
+//   4. When done, call leave(id)
+
+/// @brief Initialize named barrier `id` with `member_count` waves.
+__device__ __forceinline__ void init_named(int id, int member_count) {
+    unsigned m0_val = (static_cast<unsigned>(member_count) << 16) | static_cast<unsigned>(id);
+    asm volatile("s_mov_b32 m0, %0\n"
+                 "s_barrier_init m0"
+                 :: "s"(m0_val) : "memory");
+}
+
+/// @brief Current wave joins named barrier `id`.
+template<int ID>
+__device__ __forceinline__ void join() {
+    static_assert(ID >= 1 && ID <= 16, "named barrier ID must be in [1, 16]");
+    asm volatile("s_barrier_join %0" :: "I"(ID) : "memory");
+}
+
+/// @brief Signal named barrier `id`.
+template<int ID>
+__device__ __forceinline__ void signal() {
+    static_assert(ID >= 1 && ID <= 16, "named barrier ID must be in [1, 16]");
+    __builtin_amdgcn_s_barrier_signal(ID);
+}
+
+/// @brief Wait on named barrier `id`.
+template<int ID>
+__device__ __forceinline__ void wait_named() {
+    static_assert(ID >= 1 && ID <= 16, "named barrier ID must be in [1, 16]");
+    __builtin_amdgcn_s_barrier_wait(ID);
+}
+
+/// @brief Wake all waves joined to named barrier `id`.
+template<int ID>
+__device__ __forceinline__ void wakeup_barrier() {
+    static_assert(ID >= 1 && ID <= 16, "named barrier ID must be in [1, 16]");
+    asm volatile("s_wakeup_barrier %0" :: "I"(ID) : "memory");
+}
+
 /* ----------  LDS BARRIER CELLS (FOR TDM / ASYNC ARRIVE)  ---------- */
 //
 // 64-bit LDS-resident barrier cell, per SP3 section 9.8.13
