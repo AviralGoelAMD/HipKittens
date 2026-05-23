@@ -139,7 +139,11 @@ int main(int argc, char** argv)
     // bf16 has ~2^-7 precision; error grows as ~sqrt(K) * 2^-7 per element.
     // Output is bf16 so final quantization adds another 2^-7. Use 2x headroom.
     double tol = 2.0 * std::sqrt(static_cast<double>(K)) * (1.0 / 128.0);
-    return (n_bad == 0 && max_abs < tol) ? 0 : 1;
+    int ret = (n_bad == 0 && max_abs < tol) ? 0 : 1;
+
+    hipFree(A_d); hipFree(B_d); hipFree(C_d);
+    hipEventDestroy(t0); hipEventDestroy(t1);
+    return ret;
 }
 
 #endif // HARNESS_MAIN
