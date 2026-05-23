@@ -332,9 +332,7 @@ template<typename T> concept all = is_segment<T>::value;
 template<int default_alignment=16> 
 struct shared_allocator {
     int *ptr;
-#ifdef KITTENS_UDNA1
     int *base;
-#endif
 
     private:
         // Recursive template to generate N-dimensional array type
@@ -366,24 +364,21 @@ struct shared_allocator {
         * @brief Construct a new shared allocator using a pointer to extern shared memory.
         * @param[in] _ptr Pointer to the start of the extern shared memory.
         */
-#ifdef KITTENS_UDNA1
         __device__ shared_allocator(int *_ptr): ptr(_ptr), base(_ptr) {}
-#else
-        __device__ shared_allocator(int *_ptr): ptr(_ptr) {}
-#endif
         /**
         * @brief Allocate shared memory for a single instance or N-dimensional array of type A.
         * @tparam A The type of the object to allocate.
         * @tparam dims... A list of dimensions for the N-dimensional array.
         * @return Reference to the allocated object.
         */
-        template<typename A, size_t... dims> 
+        template<typename A, size_t... dims>
         __device__ inline variadic_array_t<A, dims...>& allocate() {
             // static_assert(sizeof(A) % default_alignment == 0, "Type is not aligned properly for array allocation");
             align_ptr<default_alignment>();
             using at = variadic_array_t<A, dims...>;
             at*p = reinterpret_cast<at*>(ptr);
             ptr += sizeof(at)/sizeof(int);
+            assert(ptr <= base + MAX_SHARED_MEMORY / sizeof(int));
             return *p;
         }
         /**
@@ -393,13 +388,14 @@ struct shared_allocator {
         * @tparam dims... A list of dimensions for the N-dimensional array.
         * @return Reference to the allocated object.
         */
-        template<int alignment, typename A, size_t... dims> 
+        template<int alignment, typename A, size_t... dims>
         __device__ inline variadic_array_t<A, dims...>& allocate() {
             // static_assert(sizeof(A) % alignment == 0, "Type is not aligned properly for array allocation");
             align_ptr<alignment>();
             using at = variadic_array_t<A, dims...>;
             at*p = reinterpret_cast<at*>(ptr);
             ptr += sizeof(at)/sizeof(int);
+            assert(ptr <= base + MAX_SHARED_MEMORY / sizeof(int));
             return *p;
         }
 
@@ -426,6 +422,8 @@ struct shared_allocator {
             using at = variadic_array_t<A, dims...>;
             at* p = reinterpret_cast<at*>(ptr);
             ptr += sizeof(at) / sizeof(int);
+            constexpr int seg_end = (SEG::index + 1) * LDS_SEGMENT_BYTES / sizeof(int);
+            assert(ptr <= base + seg_end);
             return *p;
         }
 #endif // KITTENS_UDNA1
