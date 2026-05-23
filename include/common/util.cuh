@@ -109,7 +109,7 @@ __host__ __device__ inline int ceil_div(int a, int b) {
     int limit = (num_workgroups / block) * block;
 
     // If pid beyond the last full block, leave unchanged
-    if (workgroup_id > limit) return workgroup_id;
+    if (workgroup_id >= limit) return workgroup_id;
 
     // Local PID (within round-robin assignment)
     int local_pid    = workgroup_id / num_xcds;
