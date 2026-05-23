@@ -486,6 +486,10 @@ using i32x4_lvec  = int __attribute__((__vector_size__(16))) __attribute__((addr
  */
 template<int ROWS, int COLS, int SUB_ROWS, int SUB_COLS>
 __device__ __forceinline__ int subtile_flat(int flat) {
+    static_assert((SUB_ROWS * SUB_COLS & (SUB_ROWS * SUB_COLS - 1)) == 0,
+                  "sub_elems must be power-of-2 to avoid integer division");
+    static_assert((SUB_COLS & (SUB_COLS - 1)) == 0,
+                  "SUB_COLS must be power-of-2 to avoid integer division");
     constexpr int sub_elems    = SUB_ROWS * SUB_COLS;
     constexpr int subs_per_row = COLS / SUB_COLS;
     const int subtile_id = flat / sub_elems;
