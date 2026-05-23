@@ -333,6 +333,9 @@ template<int default_alignment=16>
 struct shared_allocator {
     int *ptr;
     int *base;
+#ifdef KITTENS_UDNA1
+    int *seg_ptr[LDS_NUM_SEGMENTS];
+#endif
 
     private:
         // Recursive template to generate N-dimensional array type
@@ -364,7 +367,12 @@ struct shared_allocator {
         * @brief Construct a new shared allocator using a pointer to extern shared memory.
         * @param[in] _ptr Pointer to the start of the extern shared memory.
         */
-        __device__ shared_allocator(int *_ptr): ptr(_ptr), base(_ptr) {}
+        __device__ shared_allocator(int *_ptr): ptr(_ptr), base(_ptr) {
+#ifdef KITTENS_UDNA1
+            for (int i = 0; i < LDS_NUM_SEGMENTS; i++)
+                seg_ptr[i] = base + i * (LDS_SEGMENT_BYTES / (int)sizeof(int));
+#endif
+        }
         /**
         * @brief Allocate shared memory for a single instance or N-dimensional array of type A.
         * @tparam A The type of the object to allocate.
@@ -415,15 +423,17 @@ struct shared_allocator {
         template<typename SEG, typename A, size_t... dims>
             requires ducks::segment_tag::all<SEG>
         __device__ inline variadic_array_t<A, dims...>& allocate_in() {
-            int* target = base + (SEG::byte_offset / sizeof(int));
-            // If we've already allocated past the requested segment, keep
-            // packing where we are; otherwise jump forward to the segment.
-            if (ptr < target) ptr = target;
+            constexpr int idx = SEG::index;
+            if constexpr (default_alignment > 0) {
+                uint64_t p = reinterpret_cast<uint64_t>(seg_ptr[idx]);
+                if (p % default_alignment != 0)
+                    seg_ptr[idx] = (int*)(p + (default_alignment - (p % default_alignment)));
+            }
             using at = variadic_array_t<A, dims...>;
-            at* p = reinterpret_cast<at*>(ptr);
-            ptr += sizeof(at) / sizeof(int);
-            constexpr int seg_end = (SEG::index + 1) * LDS_SEGMENT_BYTES / sizeof(int);
-            assert(ptr <= base + seg_end);
+            at* p = reinterpret_cast<at*>(seg_ptr[idx]);
+            seg_ptr[idx] += sizeof(at) / sizeof(int);
+            constexpr int seg_end = (idx + 1) * LDS_SEGMENT_BYTES / sizeof(int);
+            assert(seg_ptr[idx] <= base + seg_end);
             return *p;
         }
 #endif // KITTENS_UDNA1
