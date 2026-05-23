@@ -191,6 +191,7 @@ struct alignas(8) barrier_lds { uint64_t state; };
 
 /// @brief Initialize an LDS barrier cell to expect `count` arrivals per phase.
 __device__ __forceinline__ void init_barrier(uint64_t* bar, uint32_t count) {
+    assert(count > 0 && count <= 0xFFFF);
     // pending = count - 1, phase = 0, init_count = count - 1.
     const uint32_t pending  = count - 1;
     const uint32_t init_cnt = count - 1;
