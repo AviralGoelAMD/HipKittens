@@ -223,16 +223,18 @@ __device__ __forceinline__ void wait_barrier(uint64_t* bar, int expected_phase) 
 }
 
 /**
- * @brief Arrive at an LDS barrier cell from an async-ordered path.
+ * @brief Arrive at an LDS barrier cell from an async-ordered path (once per wave).
  *
- * Lowers to `DS_ATOMIC_ASYNC_BARRIER_ARRIVE_B64`. Use this to manually
- * arrive at a cell (the auto-arrive form is encoded in the TDM descriptor
- * via `load_tdm_arrive`).
+ * Lowers to `DS_ATOMIC_ASYNC_BARRIER_ARRIVE_B64` which is a DS atomic that
+ * fires per active lane. This wrapper restricts execution to lane 0 so the
+ * barrier receives exactly one arrival per wave.
  */
 __device__ __forceinline__ void async_barrier_arrive(uint64_t* lds_counter) {
-    uintptr_t lds_uint = reinterpret_cast<uintptr_t>(lds_counter);
-    __builtin_amdgcn_ds_atomic_async_barrier_arrive_b64(
-        reinterpret_cast<long __attribute__((address_space(3)))*>(lds_uint));
+    if (laneid() == 0) {
+        uintptr_t lds_uint = reinterpret_cast<uintptr_t>(lds_counter);
+        __builtin_amdgcn_ds_atomic_async_barrier_arrive_b64(
+            reinterpret_cast<long __attribute__((address_space(3)))*>(lds_uint));
+    }
 }
 
 } // namespace sync
