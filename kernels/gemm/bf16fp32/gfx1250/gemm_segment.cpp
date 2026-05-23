@@ -12,9 +12,14 @@
 using namespace kittens;
 using namespace gfx1250_gemm;
 
+// Pad type must match between load_async (write) and load_b128 (read).
 using Pad = lds_pad_default;
 constexpr int A_ELEMS_PAD = Pad::padded_elems(BLOCK_M * K_STEP);
 constexpr int B_ELEMS_PAD = Pad::padded_elems(BLOCK_N * K_STEP);
+static_assert(2 * A_ELEMS_PAD * sizeof(kittens::bf16) <= kittens::LDS_SEGMENT_BYTES,
+              "Double-buffered A must fit in one LDS segment");
+static_assert(2 * B_ELEMS_PAD * sizeof(kittens::bf16) <= kittens::LDS_SEGMENT_BYTES,
+              "Double-buffered B must fit in one LDS segment");
 
 __global__ __launch_bounds__(NUM_THREADS, 1)
 void gemm_segment_kernel(const gemm_globals g, int M, int N, int K)

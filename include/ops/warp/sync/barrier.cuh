@@ -207,6 +207,9 @@ __device__ __forceinline__ void init_barrier(uint64_t* bar, uint32_t count) {
  * Callers maintain a parity bit per barrier and pass it inverted before
  * each wait (`expected = (phase ^= 1)`). The hardware wakes sleeping
  * waves on phase flip; `s_sleep 1` yields the SIMD between polls.
+ *
+ * WARNING: infinite loop if the matching arrive never fires (e.g., wrong
+ * init_barrier count or missing async_barrier_arrive). No timeout.
  */
 __device__ __forceinline__ void wait_barrier(uint64_t* bar, int expected_phase) {
     const uint32_t lds_addr = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(bar));
