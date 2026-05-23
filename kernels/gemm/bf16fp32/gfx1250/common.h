@@ -36,7 +36,12 @@ struct gemm_globals {
     int M() const { return a.rows(); }
     int N() const { return c.cols(); }
     int K() const { return a.cols(); }
-    dim3   grid()  const { return dim3(M() / BLOCK_M, N() / BLOCK_N); }
+    dim3   grid()  const {
+        assert(M() % BLOCK_M == 0 && "M must be a multiple of BLOCK_M");
+        assert(N() % BLOCK_N == 0 && "N must be a multiple of BLOCK_N");
+        assert(K() % K_STEP  == 0 && "K must be a multiple of K_STEP");
+        return dim3(M() / BLOCK_M, N() / BLOCK_N);
+    }
     dim3   block() const { return dim3(NUM_THREADS); }
     size_t dynamic_shared_memory() const { return kittens::MAX_SHARED_MEMORY; }
 };
