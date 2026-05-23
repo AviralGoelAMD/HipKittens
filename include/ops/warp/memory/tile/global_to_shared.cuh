@@ -501,6 +501,8 @@ __device__ __forceinline__ int subtile_flat(int flat) {
  * Plain `global_load` -> VGPR -> `ds_store` path. Use this when no async
  * intrinsic is available or for correctness baselines. The `Pad` parameter
  * controls the per-element LDS placement; pass `lds_nopad` for flat layouts.
+ *
+ * Caller must ensure matrix dimensions are multiples of ROWS/COLS (no bounds clamping).
  */
 template<typename Pad = lds_nopad, int ROWS = 0, int COLS = 0, int N_THREADS = WARP_THREADS,
          typename T, ducks::gl::all GL, ducks::coord::tile COORD = coord<>>
@@ -535,6 +537,8 @@ __device__ inline void load(T* __restrict__ lds_dst, const GL& src, const COORD&
  * and to `cluster_load_async_to_lds_b128` (multicast) when non-zero. Each lane
  * issues one 16-byte transfer; the warp covers `8 * N_THREADS` elements per
  * iteration. Drain with `kittens::sync::wait_async()` before consuming.
+ *
+ * Caller must ensure matrix dimensions are multiples of ROWS/COLS (no bounds clamping).
  *
  * @tparam Pad      LDS padding descriptor.
  * @tparam ROWS,COLS  Tile shape (elements).
