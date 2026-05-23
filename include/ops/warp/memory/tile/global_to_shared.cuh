@@ -673,6 +673,7 @@ __device__ __forceinline__ void build_tdm_d_2d(
     const uint32_t tiledim1 = static_cast<uint32_t>(ROWS);
 
     // barrier_addr occupies w1[15:0]; tensor_dim0 lo16 occupies w1[31:16].
+    assert(bar_lds_addr == 0 || bar_lds_addr < 0x10000u);
     uint32_t w1 = (bar_lds_addr & 0xFFFFu) | (tdim0 << 16);
     uint32_t w2 = (tdim0 >> 16) | (tdim1 << 16);
     uint32_t w3 = (tdim1 >> 16) | (tiledim0 << 16);
