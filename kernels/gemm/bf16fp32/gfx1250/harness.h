@@ -61,8 +61,8 @@ int main(int argc, char** argv)
     int n_iters = (argc > 4) ? std::atoi(argv[4]) : 1;
     int verify  = (argc > 5) ? std::atoi(argv[5]) : 1;
 
-    std::printf("gemm_naive (bf16->fp32->bf16)  M=%d N=%d K=%d  iters=%d verify=%d\n",
-                M, N, K, n_iters, verify);
+    std::printf("%s (bf16->fp32->bf16)  M=%d N=%d K=%d  iters=%d verify=%d\n",
+                __FILE__, M, N, K, n_iters, verify);
 
     // ---- host fp32 reference + bf16 buffers ----
     std::vector<float> A_h(M * K), B_h(N * K), C_ref(M * N);
@@ -96,6 +96,7 @@ int main(int argc, char** argv)
 
     // ---- warmup + timed run ----
     dispatch(g);
+    HIP_OK(hipGetLastError());
     HIP_OK(hipDeviceSynchronize());
 
     hipEvent_t t0, t1;
