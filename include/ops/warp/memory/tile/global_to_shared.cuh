@@ -10,6 +10,13 @@
 
 namespace kittens {
 
+// CDNA global→shared load overloads (4 variants):
+// 1. load(ST, GL, coord)             — typed ST, computes swizzle inline
+// 2. load(ST, GL, coord, precomp)    — typed ST, takes precomputed swizzle offsets
+// 3. load_async(ST, GL, coord)       — async DMA path (CDNA2+)
+// 4. store(GL, ST, coord)            — shared→global (reverse direction)
+// For gfx1250, see the g2s:: namespace below for register-mediated and TDM paths.
+
 template<int axis, bool assume_aligned,
          ducks::st::all ST, ducks::gl::all GL,
          ducks::coord::tile COORD = coord<ST>,

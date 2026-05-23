@@ -13,6 +13,8 @@ using namespace kittens;
 using namespace gfx1250_gemm;
 
 // Pad type must match between load_async (write) and load_b128 (read).
+// A uses ~8.7KB of a 64KB segment — the rest is unused but reserves the segment
+// for dual-port LDS access (A and B on separate ports).
 using Pad = lds_pad_default;
 constexpr int A_ELEMS_PAD = Pad::padded_elems(BLOCK_M * K_STEP);
 constexpr int B_ELEMS_PAD = Pad::padded_elems(BLOCK_N * K_STEP);

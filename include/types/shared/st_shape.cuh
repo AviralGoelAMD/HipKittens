@@ -296,6 +296,7 @@ struct st_16x32_padded {
         }
     }
 
+    // Named "swizzle" for API compat with CDNA shapes, but applies padding (not XOR swizzle).
     template<typename _T>
     __device__ __forceinline__ static const uint32_t swizzle(int2 coord) {
         const int r = coord.x, c = coord.y;
@@ -309,18 +310,19 @@ struct st_16x32_padded {
     }
 };
 
+template<typename T> struct is_st_16x32_padded_inst : std::false_type {};
+template<int I, int A> struct is_st_16x32_padded_inst<st_16x32_padded<I, A>> : std::true_type {};
+
 template<typename T>
-concept all = std::is_same_v<T, st_16x16> || 
-              std::is_same_v<T, st_16x16_swizzled> || 
-              std::is_same_v<T, st_32x32> || 
-              std::is_same_v<T, st_16x32> || 
-              std::is_same_v<T, st_32x16> || 
+concept all = std::is_same_v<T, st_16x16> ||
+              std::is_same_v<T, st_16x16_swizzled> ||
+              std::is_same_v<T, st_32x32> ||
+              std::is_same_v<T, st_16x32> ||
+              std::is_same_v<T, st_32x16> ||
               std::is_same_v<T, st_8x32>  ||
               std::is_same_v<T, st_16x128> ||
               std::is_same_v<T, st_16x32_nosz> ||
-              std::is_same_v<T, st_16x32_padded<>> ||
-              std::is_same_v<T, st_16x32_padded<128, 8>> ||
-              std::is_same_v<T, st_16x32_padded<64, 4>>;
+              is_st_16x32_padded_inst<T>::value;
 #else
 template<typename T>
 concept all = std::is_same_v<T, st_16x16> || 
