@@ -783,6 +783,7 @@ __device__ inline void load_b32(
     rt_bf<WARP_M, WARP_K, ducks::rt_layout::row, ducks::rt_shape::rt_16x32>& dst,
     const bf16* __restrict__ warp_lds_base)
 {
+    // Unpadded only — use load_b128<Pad> for padded LDS layouts.
     constexpr int height       = WARP_M / detail::GFX1250_SUB_ROWS;
     constexpr int width        = WARP_K / detail::GFX1250_SUB_COLS;
     constexpr int subs_per_row = WARP_K / detail::GFX1250_SUB_COLS;
