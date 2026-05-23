@@ -174,7 +174,11 @@ struct default_type {};
 /**
  * @brief Mask constant for all active threads in a warp.
  */
-static constexpr uint64_t MASK_ALL = 0xFFFFFFFFFFFFFFFF;
+#ifdef KITTENS_UDNA1
+static constexpr uint64_t MASK_ALL = 0x00000000FFFFFFFF; // wave-32
+#else
+static constexpr uint64_t MASK_ALL = 0xFFFFFFFFFFFFFFFF; // wave-64
+#endif
 
 /**
  * @brief Perform a shuffle down operation on a packed type synchronously across a warp.
@@ -381,7 +385,7 @@ struct shared_allocator {
         */
         template<typename A, size_t... dims>
         __device__ inline variadic_array_t<A, dims...>& allocate() {
-            // static_assert(sizeof(A) % default_alignment == 0, "Type is not aligned properly for array allocation");
+
             align_ptr<default_alignment>();
             using at = variadic_array_t<A, dims...>;
             at*p = reinterpret_cast<at*>(ptr);
@@ -398,7 +402,7 @@ struct shared_allocator {
         */
         template<int alignment, typename A, size_t... dims>
         __device__ inline variadic_array_t<A, dims...>& allocate() {
-            // static_assert(sizeof(A) % alignment == 0, "Type is not aligned properly for array allocation");
+
             align_ptr<alignment>();
             using at = variadic_array_t<A, dims...>;
             at*p = reinterpret_cast<at*>(ptr);
