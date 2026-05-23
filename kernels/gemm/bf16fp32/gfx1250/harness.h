@@ -74,6 +74,9 @@ int main(int argc, char** argv)
     for (auto& x : B_h) x = dist(rng);
     for (size_t i = 0; i < A_h.size(); ++i) A_bf[i] = float_to_bf16(A_h[i]);
     for (size_t i = 0; i < B_h.size(); ++i) B_bf[i] = float_to_bf16(B_h[i]);
+    // Round-trip through bf16 so CPU reference sees same inputs as GPU
+    for (size_t i = 0; i < A_h.size(); ++i) A_h[i] = bf16_to_float(A_bf[i]);
+    for (size_t i = 0; i < B_h.size(); ++i) B_h[i] = bf16_to_float(B_bf[i]);
 
     // ---- device buffers ----
     __hip_bfloat16 *A_d = nullptr, *B_d = nullptr, *C_d = nullptr;
@@ -133,7 +136,10 @@ int main(int argc, char** argv)
     mean_abs /= (M * N);
     std::printf("  max_abs_err=%.4f  mean_abs_err=%.4f  bad=%d/%d\n",
                 max_abs, mean_abs, n_bad, M * N);
-    return (max_abs < 1.0 || n_bad < 10) ? 0 : 1;
+    // bf16 has ~2^-7 precision; error grows as ~sqrt(K) * 2^-7 per element.
+    // Output is bf16 so final quantization adds another 2^-7. Use 2x headroom.
+    double tol = 2.0 * std::sqrt(static_cast<double>(K)) * (1.0 / 128.0);
+    return (n_bad == 0 && max_abs < tol) ? 0 : 1;
 }
 
 #endif // HARNESS_MAIN
