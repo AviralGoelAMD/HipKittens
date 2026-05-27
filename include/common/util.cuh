@@ -128,7 +128,7 @@ __host__ __device__ inline int ceil_div(int a, int b) {
  * On gfx1250, the **LDS scratchpad and the L1 data cache are one 384 KB SRAM
  * pool per Work-Group Processor (WGP)**, partitioned at dispatch time into six
  * 64 KB segments. At least one segment must remain L1, leaving up to 320 KB
- * addressable as LDS. (L1 is also referred to as WGP$ or WGP-cache.)
+ * addressable as LDS.
  *
  * The library default exposes one segment (64 KB) of LDS; kernels needing
  * more should request a larger dynamic shared-memory size at launch via

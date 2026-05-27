@@ -6,14 +6,14 @@
  * **Grid -> Cluster -> Workgroup -> Wave -> Thread**.
  *
  * The on-chip cache hierarchy visible to the shader is two levels:
- * **L1 (per-WGP, a.k.a. WGP$) -> L2 (chip-wide, a.k.a. GL2)**.
+ * **L1 (per-WGP) -> L2 (chip-wide)**.
  *
  * gfx1250 supports CUDA thread block clusters (known as workgroup clusters)
  * where workgroups dispatched together can share a cluster-wide split barrier
  * and use multicast loads. When multiple workgroups in a cluster request the
  * same line, the fabric coalesces their requests and a single L2 return
  * broadcasts to up to 5 workgroups in one cycle. The multicast loads
- * force-miss the WGP-cache, so plan locality assuming no L1 hit on those lines.
+ * force-miss the L1, so plan locality assuming no L1 hit on those lines.
  *
  * The runtime side (HIP launch API) is still landing; in the meantime
  * this header provides the **device-side** primitives that take a `M0`
@@ -38,9 +38,9 @@ namespace cluster {
  *
  * @param wg_bits        16-bit mask, bit `i` set ⇒ deliver result to WG `i` of the cluster.
  * @param early_timeout  If true, set bit 16 -- the load returns to whichever waves
- *                       have already joined as soon as GL2 returns; late joiners
+ *                       have already joined as soon as the L2 returns; late joiners
  *                       issue a follow-up transaction. Useful when a few stragglers
- *                       would otherwise stall fast WGs.
+ *                       would otherwise stall fast workgroups.
  *
  * @return The `M0` value to pass as the `cluster_mask` argument of
  *         `kittens::load_async`/`kittens::load_tdm`.
