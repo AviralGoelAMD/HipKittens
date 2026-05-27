@@ -5,9 +5,15 @@
  * The HIP compute hierarchy is:
  * **Grid -> Cluster -> Workgroup -> Wave -> Thread**.
  *
- * gfx1250 supports CUDA thread block clusters (known as workgroup clusters) where up to 5
- * workgroups dispatched together can share a cluster-wide split barrier and
- * coalesce GL1 line requests via multicast.
+ * The on-chip cache hierarchy visible to the shader is two levels:
+ * **L1 (per-WGP, a.k.a. WGP$) -> L2 (chip-wide, a.k.a. GL2)**.
+ *
+ * gfx1250 supports CUDA thread block clusters (known as workgroup clusters)
+ * where workgroups dispatched together can share a cluster-wide split barrier
+ * and use multicast loads. When multiple workgroups in a cluster request the
+ * same line, the fabric coalesces their requests and a single L2 return
+ * broadcasts to up to 5 workgroups in one cycle. The multicast loads
+ * force-miss the WGP-cache, so plan locality assuming no L1 hit on those lines.
  *
  * The runtime side (HIP launch API) is still landing; in the meantime
  * this header provides the **device-side** primitives that take a `M0`
