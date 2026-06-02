@@ -26,6 +26,7 @@ struct micro_globals {
     _gl_A a;
     _gl_B b;
     _gl_C c;
+    gl<float,1,1,1,1> alpha{nullptr,nullptr,nullptr,nullptr,nullptr};  // null default so bindings that omit alpha still aggregate-init
     hipStream_t stream;
     int M = a.rows();
     int N = c.cols();
