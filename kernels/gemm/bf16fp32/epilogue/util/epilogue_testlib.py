@@ -57,6 +57,15 @@ EPILOGUES = {
         "label":    lambda args: f"a={args[0].item():g}",
         "hbm_passes": 2,
     },
+    "k5": {  # Stage-1 RMSNorm scale: precomputed per-row r + per-feature gamma (dummy alpha fills the binding slot)
+        "module": "tk_k5",
+        "args":     lambda m, n, k: (_f32(1.0), init_randn((m,)), init_randn((n,))),  # r is [1,1,1,M] (1-D, last axis)
+        "ref":      lambda D, out, alpha, r, gamma: out.copy_((D.float() * r.float().view(-1, 1) * gamma.float().view(1, -1)).to(DTYPE)),
+        "identity": lambda m, n, k: (_f32(1.0), torch.ones((m,), dtype=DTYPE, device="cuda"), torch.ones((n,), dtype=DTYPE, device="cuda")),
+        "sweep":    lambda m, n, k: [(_f32(1.0), init_randn((m,)), init_randn((n,)))],  # random r,gamma = [C2] direction guard
+        "label":    lambda args: "rms+gamma",
+        "hbm_passes": 2,
+    },
     # K5 example (when it lands):
     # "rmsnorm": {
     #     "module": "tk_rmsnorm",
