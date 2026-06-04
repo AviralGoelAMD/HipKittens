@@ -1,0 +1,8 @@
+*.so
+*.out
+*.tmp.bc
+__pycache__/
+results_*.json
+*.s
+*.rpass.log
+workloads/

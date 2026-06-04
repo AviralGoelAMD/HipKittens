@@ -1,5 +1,5 @@
 #pragma once
-#include "epilogue_types.cuh"
+#include "epilogue_base.cuh"
 
 template<typename Epilogue = NoOpEpilogue>
 __global__ __launch_bounds__(NUM_THREADS, 2)
