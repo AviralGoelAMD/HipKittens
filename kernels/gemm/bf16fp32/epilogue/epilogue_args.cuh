@@ -27,6 +27,8 @@ struct micro_globals {
     _gl_B b;
     _gl_C c;
     gl<float,1,1,1,1> alpha{nullptr,nullptr,nullptr,nullptr,nullptr};  // null default so bindings that omit alpha still aggregate-init
+    gl<bf16,-1,-1,-1,-1> r{nullptr,1,1,1,1};      // K5: per-row inv_rms [1,1,1,M] (last axis); null default so bindings that omit it still aggregate-init
+    gl<bf16,-1,-1,-1,-1> gamma{nullptr,1,1,1,1};  // K5: per-feature gamma [1,1,1,N]; null default
     hipStream_t stream;
     int M = a.rows();
     int N = c.cols();
