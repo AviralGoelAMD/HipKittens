@@ -55,7 +55,8 @@ def main():
             err = (O.float() - ref.float()).abs().max().item()
             print(f"{str((m,n,k)):<20} {spec['label'](args):<13} | max_err={err:.4g} | {'PASS' if ok else 'FAIL'}")
     print("ALL PASSED" if allpass else "SOME FAILED")
+    return allpass
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(0 if main() else 1)
