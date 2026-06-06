@@ -6,3 +6,4 @@ results_*.json
 *.s
 *.rpass.log
 workloads/
+scratch/
