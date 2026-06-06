@@ -19,3 +19,15 @@ __device__ inline void residual_add(const G& g, Accum& C, int row,int col,int wr
     load(t, g.residual, {0,0,(row*2)*WARPS_M+WARPS_M+wr, col*2*WARPS_N+wc});         add(C[1][0], C[1][0], t);
     load(t, g.residual, {0,0,(row*2)*WARPS_M+WARPS_M+wr, col*2*WARPS_N+WARPS_N+wc}); add(C[1][1], C[1][1], t);
 }
+
+// save_tile: persist the current accumulator to g.save (HBM) as a snapshot for a LATER kernel.
+// K4 saves h1 = A@B + residual so K5 can normalize it after the aux kernel computes 1/rms (r is
+// not known until this kernel finishes + aux runs). Mirror of store_C, to the `save` gl (fp32
+// reg -> bf16). C is read-only; the kernel keeps transforming C in registers afterward.
+template<typename G, typename Accum>
+__device__ inline void save_tile(const G& g, const Accum& C, int row,int col,int wr,int wc){
+    store(g.save, C[0][0], {0,0,(row*2)*WARPS_M+wr,         col*2*WARPS_N+wc});
+    store(g.save, C[0][1], {0,0,(row*2)*WARPS_M+wr,         col*2*WARPS_N+WARPS_N+wc});
+    store(g.save, C[1][0], {0,0,(row*2)*WARPS_M+WARPS_M+wr, col*2*WARPS_N+wc});
+    store(g.save, C[1][1], {0,0,(row*2)*WARPS_M+WARPS_M+wr, col*2*WARPS_N+WARPS_N+wc});
+}

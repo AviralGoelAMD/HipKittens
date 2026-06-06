@@ -31,6 +31,7 @@ struct micro_globals {
     gl<bf16,-1,-1,-1,-1> gamma{nullptr,1,1,1,1};  // K5: per-feature gamma [1,1,1,N]; null default
     gl<bf16,-1,-1,-1,-1> residual{nullptr,1,1,1,1};  // Stage 2: skip connection [1,1,M,N]; null default
     gl<float,-1,-1,-1,-1> partials{nullptr,1,1,1,1};  // Stage 2: per-(group,row) RMS partials [1,1,N/64,M] (row=M LAST axis, [C12d]); null default
+    gl<bf16,-1,-1,-1,-1> save{nullptr,1,1,1,1};  // Stage 2 (K4): saved h1 = A@B+residual [1,1,M,N] for K5; null default
     hipStream_t stream;
     int M = a.rows();
     int N = c.cols();
