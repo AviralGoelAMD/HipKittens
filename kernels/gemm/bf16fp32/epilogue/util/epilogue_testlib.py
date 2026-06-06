@@ -66,6 +66,21 @@ EPILOGUES = {
         "label":    lambda args: "rms+gamma",
         "hbm_passes": 2,
     },
+    "resadd": {  # Stage 2 Task 2.1: residual add  out = (A@B) + residual  ([M,N] skip connection)
+        "module": "tk_resadd",
+        # binding is positional ([C12b]); residual sits after alpha/r/gamma, so pass throwaway
+        # alpha/r/gamma (ignored by ResAddEpilogue) to reach the residual slot.
+        "args":     lambda m, n, k: (_f32(1.0), torch.ones((m,), dtype=DTYPE, device="cuda"),
+                                     torch.ones((n,), dtype=DTYPE, device="cuda"), init_randn((m, n))),
+        "ref":      lambda D, out, alpha, r, gamma, residual: out.copy_((D.float() + residual.float()).to(DTYPE)),
+        "identity": lambda m, n, k: (_f32(1.0), torch.ones((m,), dtype=DTYPE, device="cuda"),
+                                     torch.ones((n,), dtype=DTYPE, device="cuda"),
+                                     torch.zeros((m, n), dtype=DTYPE, device="cuda")),  # residual=0 -> == noop
+        "sweep":    lambda m, n, k: [(_f32(1.0), torch.ones((m,), dtype=DTYPE, device="cuda"),
+                                      torch.ones((n,), dtype=DTYPE, device="cuda"), init_randn((m, n)))],
+        "label":    lambda args: "resadd",
+        "hbm_passes": 2,
+    },
     # K5 example (when it lands):
     # "rmsnorm": {
     #     "module": "tk_rmsnorm",
@@ -93,3 +108,17 @@ def gemm_base(noop_mod, A, Bt, m, n):
     noop_mod.dispatch_micro(A, Bt, C)
     torch.cuda.synchronize()
     return C
+
+
+def gemm_reference(A, Bt):
+    """fp32 ground-truth C = A @ B  (Bt is B transposed, shape [N,K])."""
+    return A.float() @ Bt.t().float()
+
+
+def assert_sane(name, t):
+    """Guard against degenerate tensors: finite, non-zero, and not ~constant. Catches dead
+    kernels (all-zero C) and degenerate inits that would let isolate-vs-noop pass vacuously."""
+    tf = t.float()
+    assert torch.isfinite(tf).all(), f"{name}: non-finite values (NaN/Inf)"
+    assert tf.abs().max().item() > 0, f"{name}: all zeros"
+    assert tf.std().item() > 1e-3, f"{name}: ~constant (std={tf.std().item():.2e}) - degenerate"
