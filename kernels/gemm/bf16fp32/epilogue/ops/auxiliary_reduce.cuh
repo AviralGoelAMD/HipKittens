@@ -7,7 +7,7 @@ using namespace kittens;
 // Sigma(x^2), then r[row] = rsqrt(Sigma / N + eps). eps = 1e-5 (matches layer_norm.py).
 // Standalone kernel (not a micro_tk epilogue) -> its own tiny globals struct.
 //
-// partials: [1,1, N/64, M] (groups x rows; row = last axis, [C13]).   r: [1,1, 1, M] (1/rms).
+// partials: [1,1, N/64, M] (groups x rows; row = last axis, [C12d]).   r: [1,1, 1, M] (1/rms).
 struct aux_globals {
     gl<float,-1,-1,-1,-1> partials;   // input  [1,1,N/64,M]
     gl<bf16,-1,-1,-1,-1>  r;          // output [1,1,1,M]

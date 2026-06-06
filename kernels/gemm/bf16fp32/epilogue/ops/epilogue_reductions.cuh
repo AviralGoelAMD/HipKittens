@@ -15,8 +15,7 @@ using namespace kittens;
 // (col_vec) anchors on the gl's LAST axis. Therefore `partials` is shaped [1,1, N/64, M] -- the
 // 64-col-group index on axis 2, the row (M) on the LAST axis -- and the col_vec stores along M.
 // (NOT [1,1,M,N/64] with the row-tile in the 3rd coord: that is the K5-class axis bug.)
-// >>> UNVERIFIED: this col_vec->global store axis is the #1 thing to confirm on gfx950 (it is the
-// >>> exact bug class that needed hardware debugging for K5). Verify before composing into K4.
+// This col_vec->global store axis is gfx950-verified (test_partialrms, test_k4).
 template<typename G, typename Accum>
 __device__ inline void partial_row_sum_sq(const G& g, const Accum& C, int row,int col,int wr,int wc){
     using Tile = std::remove_all_extents_t<Accum>;
