@@ -33,6 +33,7 @@ try:
 except Exception:
     tk_k4_fwd = None
 from epilogue_testlib import init_randn, init_empty, DSIZE, DTYPE
+from fusion_win import _bench, _pool_size
 # optional Triton fused residual+rms_norm baseline (Tri Dao's; the reference HK Llama uses)
 try:
     _hk = os.path.abspath(__file__)
@@ -41,32 +42,6 @@ try:
     from layer_norm import rms_norm_fn as _rms_norm_fn
 except Exception:
     _rms_norm_fn = None
-
-# B1 cold-cache pool sizing + B2 CUDA-event median timing (inlined to keep this bench self-contained).
-def _pool_size(per_set_bytes, llc_bytes, budget_bytes):
-    """B1: how many input sets to rotate so the pool exceeds the cache. One set already
-    bigger than the cache -> N=1 (it's cold on its own). Capped by a memory budget."""
-    if per_set_bytes >= llc_bytes:
-        return 1
-    n = llc_bytes // per_set_bytes + 1
-    n = min(n, max(1, budget_bytes // per_set_bytes))
-    return max(1, int(n))
-
-
-def _bench(fn, iters, warm):
-    """B2: per-iter CUDA-event timing -> median (headline), min, p90, mean (ms).
-    `fn(i)` takes the iteration index so the caller can rotate buffers (B1)."""
-    for i in range(warm): fn(i)
-    torch.cuda.synchronize()
-    starts = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
-    ends   = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
-    for i in range(iters):
-        starts[i].record(); fn(i); ends[i].record()
-    torch.cuda.synchronize()
-    s = sorted(starts[i].elapsed_time(ends[i]) for i in range(iters))
-    n = len(s)
-    return {"median": s[n // 2], "min": s[0],
-            "p90": s[min(n - 1, int(0.9 * n))], "mean": sum(s) / n}
 
 EPS = 1e-5
 # (M, K0, N, P): M/N/P % 256 (tiling); K0,N % 128 (GEMM contraction dims, [C13]).
