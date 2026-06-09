@@ -81,6 +81,15 @@ EPILOGUES = {
         "label":    lambda args: "resadd",
         "hbm_passes": 2,
     },
+    "silu": {  # Stage 3.1: SiLU activation  out = silu(A@B) = x * sigmoid(x)
+        "module": "tk_silu",
+        "args":     lambda m, n, k: (),
+        "ref":      lambda D, out: out.copy_((D.float() * torch.sigmoid(D.float())).to(DTYPE)),
+        "identity": None,                              # silu has no identity param
+        "sweep":    lambda m, n, k: [()],
+        "label":    lambda args: "silu",
+        "hbm_passes": 2,
+    },
     # K5 example (when it lands):
     # "rmsnorm": {
     #     "module": "tk_rmsnorm",
