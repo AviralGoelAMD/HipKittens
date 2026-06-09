@@ -36,3 +36,12 @@ __device__ inline void apply_gamma(const G& g, Accum& C, int row,int col,int wr,
     mul_col(C[0][0], C[0][0], g0); mul_col(C[1][0], C[1][0], g0);
     mul_col(C[0][1], C[0][1], g1); mul_col(C[1][1], C[1][1], g1);
 }
+
+// scalar alpha : alpha is a 1-elem gl ([C9]); broadcast-multiply every subtile. Coordinate-free
+// (a pure scalar, no store_C-mirrored load), so it takes no row/col/wr/wc.
+template<typename G, typename Accum>
+__device__ inline void apply_scale(const G& g, Accum& C){
+    float a = g.alpha[{0,0,0,0}];
+    #pragma unroll
+    for(int i=0;i<2;i++) for(int j=0;j<2;j++) mul(C[i][j], C[i][j], a);   // tile x scalar (maps.cuh:571)
+}
