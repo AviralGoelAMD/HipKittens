@@ -3,6 +3,7 @@ GPU_TARGET ?= CDNA4
 KERNEL     ?= noop
 MODULE     ?= tk_kernel
 SRC        := bindings/gemm_$(KERNEL).cpp
+DEPFILE    := $(MODULE).d
 
 # HIP variables
 ROCM_INSTALL_DIR := $(ROCM_PATH)
@@ -36,16 +37,20 @@ ILDLIBS   += $(LDLIBS)
 
 PY_LDFLAGS := $(shell python3-config --ldflags | sed 's/-lcrypt//g')
 ICXXFLAGS += $(PY_LDFLAGS)
-ICXXFLAGS+= -I${THUNDERKITTENS_ROOT}/include -I${THUNDERKITTENS_ROOT}/prototype $(shell python3 -m pybind11 --includes) -shared -fPIC -Rpass-analysis=kernel-resource-usage
+ICXXFLAGS+= -I${THUNDERKITTENS_ROOT}/prototype $(shell python3 -m pybind11 --includes) -shared -fPIC -Rpass-analysis=kernel-resource-usage -MMD -MP -MF $(DEPFILE)
 
 HIPFLAGS   += -DTK_MODULE_NAME=$(MODULE)
 
+.PHONY: all clean
 # Default target
 all: $(MODULE)$(shell python3-config --extension-suffix)
 
 $(MODULE)$(shell python3-config --extension-suffix): $(SRC)
-	$(HIPCXX) $(SRC) $(HIPFLAGS) $(ICXXFLAGS) $(ICPPFLAGS) $(ILDFLAGS) -o $@
+	$(HIPCXX) $(SRC) $(HIPFLAGS) $(ICXXFLAGS) $(ICPPFLAGS) $(ILDFLAGS) $(ILDLIBS) -o $@
 
 # Clean target
 clean:
-	rm -f $(MODULE)*.so
+	rm -f $(MODULE)*.so $(MODULE)*.d
+
+# header dependencies emitted by -MMD (line is silently skipped on the first build)
+-include $(DEPFILE)
