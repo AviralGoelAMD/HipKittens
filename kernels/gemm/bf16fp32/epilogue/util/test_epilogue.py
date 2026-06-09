@@ -16,9 +16,10 @@ import os, sys, importlib
 # make the built tk_*.so (one dir up, the epilogue root where `make` runs) importable
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import torch
-from epilogue_testlib import EPILOGUES, make_inputs, gemm_base, init_empty, RTOL, ATOL, DTYPE
+from epilogue_testlib import EPILOGUES, make_inputs, gemm_base, init_empty, assert_sane, RTOL, ATOL, DTYPE
 
-SHAPES = [(2048, 2048, 2048), (512, 1024, 1024), (8192, 8192, 8192)]
+SHAPES = [(256, 256, 256), (256, 512, 128), (512, 256, 256), (768, 768, 256),   # small / single-block (K % 128, [C13])
+          (2048, 1024, 512), (512, 1024, 1024), (2048, 2048, 2048), (8192, 8192, 8192)]
 
 
 def main():
@@ -33,6 +34,7 @@ def main():
     for (m, n, k) in SHAPES:
         A, Bt = make_inputs(m, n, k)
         Cn = gemm_base(noop, A, Bt, m, n)                  # bf16 GEMM baseline
+        assert_sane("A", A); assert_sane("Bt", Bt); assert_sane("C[noop]", Cn)   # inputs + baseline must be real (no vacuous pass)
 
         # (a) identity == noop, bit-exact
         idf = spec["identity"]
@@ -53,7 +55,8 @@ def main():
             err = (O.float() - ref.float()).abs().max().item()
             print(f"{str((m,n,k)):<20} {spec['label'](args):<13} | max_err={err:.4g} | {'PASS' if ok else 'FAIL'}")
     print("ALL PASSED" if allpass else "SOME FAILED")
+    return allpass
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(0 if main() else 1)
