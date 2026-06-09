@@ -1,5 +1,5 @@
 #pragma once
-#include "kittens.cuh"
+#include "epilogue_args.cuh"   // REG_BLOCK_N = per-warp-column group width (cols per (row,group) partial)
 using namespace kittens;
 
 // Auxiliary RMS reduce (Stage 2 Task 2.4): turn K4's per-(64-col group, row) partials into the
@@ -18,8 +18,8 @@ __global__ void rms_reduce(const gl<float,-1,-1,-1,-1> partials, gl<bf16,-1,-1,-
     int row = blockIdx.x * blockDim.x + threadIdx.x;
     int M = r.cols();
     if (row >= M) return;
-    int groups = partials.rows();        // = N/64
-    int N = groups * 64;                 // full feature dim
+    int groups = partials.rows();        // = N / REG_BLOCK_N
+    int N = groups * REG_BLOCK_N;        // full feature dim (REG_BLOCK_N cols folded into each group)
     int stride = partials.cols();        // = M  (partials laid out [groups, M] row-major)
     float s = 0.f;
     for (int g = 0; g < groups; ++g) s += partials.raw_ptr[g * stride + row];
