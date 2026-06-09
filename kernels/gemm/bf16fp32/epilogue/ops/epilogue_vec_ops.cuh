@@ -42,6 +42,6 @@ __device__ inline void apply_gamma(const G& g, Accum& C, int row,int col,int wr,
 template<typename G, typename Accum>
 __device__ inline void apply_scale(const G& g, Accum& C){
     float a = g.alpha[{0,0,0,0}];
-    #pragma unroll
-    for(int i=0;i<2;i++) for(int j=0;j<2;j++) mul(C[i][j], C[i][j], a);   // tile x scalar (maps.cuh:571)
+    mul(C[0][0], C[0][0], a); mul(C[0][1], C[0][1], a);   // tile x scalar (maps.cuh:571)
+    mul(C[1][0], C[1][0], a); mul(C[1][1], C[1][1], a);
 }

@@ -7,11 +7,8 @@
 struct SiluEpilogue {
     template<typename G, typename Accum>
     static __device__ inline void apply(const G& g, Accum& C, int row,int col,int wr,int wc){
-        #pragma unroll
-        for(int i=0;i<2;i++)
-            #pragma unroll
-            for(int j=0;j<2;j++)
-                silu_op(C[i][j]);             // x <- silu(x), register-only
+        silu_op(C[0][0]); silu_op(C[0][1]);   // x <- silu(x), register-only
+        silu_op(C[1][0]); silu_op(C[1][1]);
         store_C(g, C, row, col, wr, wc);      // epilogue owns the store ([C7])
     }
 };
