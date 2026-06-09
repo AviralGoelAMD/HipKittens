@@ -1,12 +1,11 @@
 #include "gemm_base.cuh"
+#include "epilogue_vec_ops.cuh"   // apply_scale
 #include "pyutils/pyutils.cuh"
 
 struct ScaleEpilogue {
     template<typename G, typename Accum>
     static __device__ inline void apply(const G& g, Accum& C, int row,int col,int wr,int wc){
-        float a = g.alpha[{0,0,0,0}];                 // 1-elem gl scalar ([C9])
-        #pragma unroll
-        for(int i=0;i<2;i++) for(int j=0;j<2;j++) mul(C[i][j], C[i][j], a);   // tile x scalar (maps.cuh:571)
+        apply_scale(g, C);                            // alpha * C  (tile x 1-elem-gl scalar, [C9])
         store_C(g, C, row, col, wr, wc);              // epilogue owns the store ([C7])
     }
 };
