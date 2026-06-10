@@ -1,9 +1,18 @@
 #pragma once
 #include "epilogue_base.cuh"
+#include <stdexcept>
+#include "pyutils/util.cuh"   // CHECK_CUDA_ERROR (HK's HIP error-check helper)
 
-template<typename Epilogue = NoOpEpilogue>
+// The epilogue contract (a static apply with the right signature) is enforced by a static_assert
+// inside micro_tk, where the accumulator type is in scope.
+
+template<typename Epilogue = NoOpEpilogue, typename Globals = gemm_args_base>
 __global__ __launch_bounds__(NUM_THREADS, 2)
-void micro_tk(const micro_globals g, int M, int N, int K) {
+void micro_tk(const Globals g, int M, int N, int K) {
+    // Epilogue contract (precondition): apply() must be callable with our accumulator type.
+    using Accum = rt_fl<HALF_REG_BLOCK_M, HALF_REG_BLOCK_N, col_l, rt_16x16_s>[2][2];
+    static_assert(requires(const Globals& gg, Accum& acc) { Epilogue::apply(gg, acc, 0,0,0,0); },
+        "Epilogue must define: static apply(const Globals&, Accum (&)[2][2], int,int,int,int)");
     extern __shared__ alignment_dummy __shm[];
     shared_allocator al((int*)&__shm[0]);
     using ST_A = st_bf<HALF_BLOCK_SIZE, K_STEP, st_16x32_s>;
@@ -14,7 +23,7 @@ void micro_tk(const micro_globals g, int M, int N, int K) {
     rt_bf<HALF_REG_BLOCK_M, K_STEP, row_l, rt_16x32_s> A_tile;
     rt_bf<HALF_REG_BLOCK_N, K_STEP, row_l, rt_16x32_s> B_tile_0;
     rt_bf<HALF_REG_BLOCK_N, K_STEP, row_l, rt_16x32_s> B_tile_1;
-    rt_fl<HALF_REG_BLOCK_M, HALF_REG_BLOCK_N, col_l, rt_16x16_s> C_accum[2][2];
+    Accum C_accum;
     zero(C_accum[0][0]);
     zero(C_accum[0][1]);
     zero(C_accum[1][0]);
@@ -280,4 +289,19 @@ void micro_tk(const micro_globals g, int M, int N, int K) {
     }
 
     Epilogue::apply(g, C_accum, row, col, warp_row, warp_col);
+}
+
+// Single launch path for every micro_tk epilogue: fail-loud shape preconditions + checked HIP
+// calls. Bindings call this instead of hand-writing the launch.
+template<typename Epilogue, typename Globals>
+void launch_micro(Globals g) {
+    const int M = g.a.rows(), N = g.c.cols(), K = g.a.cols();
+    if (M % BLOCK_SIZE || N % BLOCK_SIZE)
+        throw std::runtime_error("GEMM: M and N must be multiples of BLOCK_SIZE (256)");
+    if (K % K_ALIGN)
+        throw std::runtime_error("GEMM: K must be a multiple of 128");
+    const size_t mem = MAX_SHARED_MEMORY;
+    CHECK_CUDA_ERROR(hipFuncSetAttribute((void*)micro_tk<Epilogue, Globals>, hipFuncAttributeMaxDynamicSharedMemorySize, mem));
+    micro_tk<Epilogue, Globals><<<dim3((N / BLOCK_SIZE) * (M / BLOCK_SIZE)), dim3(NUM_THREADS), mem, g.stream>>>(g, M, N, K);
+    CHECK_CUDA_ERROR(hipGetLastError());
 }

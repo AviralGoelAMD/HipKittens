@@ -57,27 +57,21 @@ EPILOGUES = {
         "label":    lambda args: f"a={args[0].item():g}",
         "hbm_passes": 2,
     },
-    "k5": {  # Stage-1 RMSNorm scale: precomputed per-row r + per-feature gamma (dummy alpha fills the binding slot)
+    "k5": {  # RMSNorm scale: precomputed per-row r + per-feature gamma
         "module": "tk_k5",
-        "args":     lambda m, n, k: (_f32(1.0), init_randn((m,)), init_randn((n,))),  # r is [1,1,1,M] (1-D, last axis)
-        "ref":      lambda D, out, alpha, r, gamma: out.copy_((D.float() * r.float().view(-1, 1) * gamma.float().view(1, -1)).to(DTYPE)),
-        "identity": lambda m, n, k: (_f32(1.0), torch.ones((m,), dtype=DTYPE, device="cuda"), torch.ones((n,), dtype=DTYPE, device="cuda")),
-        "sweep":    lambda m, n, k: [(_f32(1.0), init_randn((m,)), init_randn((n,)))],  # random r,gamma = [C2] direction guard
+        "args":     lambda m, n, k: (init_randn((m,)), init_randn((n,))),  # r [1,1,1,M], gamma [1,1,1,N]
+        "ref":      lambda D, out, r, gamma: out.copy_((D.float() * r.float().view(-1, 1) * gamma.float().view(1, -1)).to(DTYPE)),
+        "identity": lambda m, n, k: (torch.ones((m,), dtype=DTYPE, device="cuda"), torch.ones((n,), dtype=DTYPE, device="cuda")),
+        "sweep":    lambda m, n, k: [(init_randn((m,)), init_randn((n,)))],  # random r,gamma direction guard
         "label":    lambda args: "rms+gamma",
         "hbm_passes": 2,
     },
-    "resadd": {  # Stage 2 Task 2.1: residual add  out = (A@B) + residual  ([M,N] skip connection)
+    "resadd": {  # residual add  out = (A@B) + residual  ([M,N] skip connection)
         "module": "tk_resadd",
-        # binding is positional ([C12b]); residual sits after alpha/r/gamma, so pass throwaway
-        # alpha/r/gamma (ignored by ResAddEpilogue) to reach the residual slot.
-        "args":     lambda m, n, k: (_f32(1.0), torch.ones((m,), dtype=DTYPE, device="cuda"),
-                                     torch.ones((n,), dtype=DTYPE, device="cuda"), init_randn((m, n))),
-        "ref":      lambda D, out, alpha, r, gamma, residual: out.copy_((D.float() + residual.float()).to(DTYPE)),
-        "identity": lambda m, n, k: (_f32(1.0), torch.ones((m,), dtype=DTYPE, device="cuda"),
-                                     torch.ones((n,), dtype=DTYPE, device="cuda"),
-                                     torch.zeros((m, n), dtype=DTYPE, device="cuda")),  # residual=0 -> == noop
-        "sweep":    lambda m, n, k: [(_f32(1.0), torch.ones((m,), dtype=DTYPE, device="cuda"),
-                                      torch.ones((n,), dtype=DTYPE, device="cuda"), init_randn((m, n)))],
+        "args":     lambda m, n, k: (init_randn((m, n)),),
+        "ref":      lambda D, out, residual: out.copy_((D.float() + residual.float()).to(DTYPE)),
+        "identity": lambda m, n, k: (torch.zeros((m, n), dtype=DTYPE, device="cuda"),),  # residual=0 -> == noop
+        "sweep":    lambda m, n, k: [(init_randn((m, n)),)],
         "label":    lambda args: "resadd",
         "hbm_passes": 2,
     },

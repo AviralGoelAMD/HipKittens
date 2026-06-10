@@ -33,14 +33,12 @@ def fused_rmsnorm_block(X, W0, residual, gamma, W1):
     P = W1.shape[1]
     W0t = W0.t().contiguous()                          # base GEMM takes B transposed (A @ Bt.t() == A@B)
     W1t = W1.t().contiguous()
-    alpha = torch.ones(1, dtype=torch.float32, device="cuda")   # K4/K5 dummy scalar slot ([C9]/[C12b])
 
     # --- K4: h1 = X@W0 + residual ; c = h1*gamma ; partials = Sigma(h1^2) split over N/64 groups ---
     c = torch.empty((M, N), dtype=DTYPE, device="cuda")
     save = torch.empty((M, N), dtype=DTYPE, device="cuda")       # h1 snapshot (unused in fwd; for bwd)
     partials = torch.zeros((N // 64, M), dtype=torch.float32, device="cuda")
-    r_dummy = torch.ones(M, dtype=DTYPE, device="cuda")          # K4 ignores r (dummy binding slot)
-    tk_k4.dispatch_micro(X, W0t, c, alpha, r_dummy, gamma, residual, partials, save)
+    tk_k4.dispatch_micro(X, W0t, c, residual, gamma, partials, save)
 
     # --- aux: partials -> r = 1/rms(h1) per row ---
     r = torch.empty(M, dtype=DTYPE, device="cuda")
@@ -49,7 +47,7 @@ def fused_rmsnorm_block(X, W0, residual, gamma, W1):
     # --- K5: out = (c @ W1) * r[:,None] ; gamma already applied in K4 -> ones here ---
     out = torch.empty((M, P), dtype=DTYPE, device="cuda")
     gamma_ones = torch.ones(P, dtype=DTYPE, device="cuda")
-    tk_k5.dispatch_micro(c, W1t, out, alpha, r, gamma_ones)
+    tk_k5.dispatch_micro(c, W1t, out, r, gamma_ones)
 
     torch.cuda.synchronize()
     return out
