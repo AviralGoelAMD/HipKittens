@@ -1,30 +1,27 @@
 #include "gemm_base.cuh"
-#include "epilogue_vec_ops.cuh"
+#include "epilogue_vec_ops.cuh"   // apply_inv_rms, apply_gamma
 #include "pyutils/pyutils.cuh"
 
-// K5 (Stage 1): RMSNorm scaling with a PRECOMPUTED per-row inv_rms `r` and per-feature `gamma`.
+// RMSNorm scaling with a precomputed per-row inv_rms `r` and per-feature `gamma`:
 //   out = (A@B) * r[:,None] * gamma[None,:]
-// Validates the col_l vector-broadcast path both axes ([C2]); the real RMS reduction is Stage 2.
+struct K5Globals {
+    _gl_A a; _gl_B b; _gl_C c;
+    gl<bf16,-1,-1,-1,-1> r;       // per-row inv_rms, [1,1,1,M] (M on the last axis)
+    gl<bf16,-1,-1,-1,-1> gamma;   // per-feature gamma, [1,1,1,N]
+    hipStream_t stream;
+};
 struct K5_RMSScale_Epilogue {
     template<typename G, typename Accum>
     static __device__ inline void apply(const G& g, Accum& C, int row,int col,int wr,int wc){
         apply_inv_rms(g, C, row,col,wr,wc);   // per-row 1/rms  (col_vec, mul_row)
         apply_gamma  (g, C, row,col,wr,wc);   // per-feature gamma (row_vec, mul_col)
-        store_C(g, C, row,col,wr,wc);         // epilogue owns the store ([C7])
+        store_C(g, C, row,col,wr,wc);
     }
 };
 
-void dispatch_micro(micro_globals g) {
-    unsigned long mem = g.dynamic_shared_memory();
-    hipFuncSetAttribute((void*)micro_tk<K5_RMSScale_Epilogue>, hipFuncAttributeMaxDynamicSharedMemorySize, mem);
-    micro_tk<K5_RMSScale_Epilogue><<<g.grid(), g.block(), mem, g.stream>>>(g, g.M, g.N, g.K);
-}
+void dispatch_micro(K5Globals g) { launch_micro<K5_RMSScale_Epilogue, K5Globals>(g); }
 PYBIND11_MODULE(TK_MODULE_NAME, m) {
     m.doc() = "tk_kernel K5 RMSNorm-scale epilogue";
-    // bind_function is POSITIONAL (pyutils.cuh:68): args fill micro_globals members in
-    // declaration order. alpha sits at slot 3, so K5 must bind it too (a throwaway slot) to
-    // reach r/gamma at slots 4/5 -> caller passes a dummy alpha that this epilogue ignores.
     py::bind_function<dispatch_micro>(m, "dispatch_micro",
-        &micro_globals::a, &micro_globals::b, &micro_globals::c,
-        &micro_globals::alpha, &micro_globals::r, &micro_globals::gamma);
+        &K5Globals::a, &K5Globals::b, &K5Globals::c, &K5Globals::r, &K5Globals::gamma);
 }

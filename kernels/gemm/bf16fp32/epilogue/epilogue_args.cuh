@@ -13,6 +13,14 @@ constexpr int HALF_REG_BLOCK_M = REG_BLOCK_M / 2;
 constexpr int HALF_REG_BLOCK_N = REG_BLOCK_N / 2;
 constexpr int DOT_SLICE        = 32;
 
+constexpr int K_ALIGN = 2 * K_STEP;   // base GEMM requires K to be a multiple of 128 (two K-steps)
+static_assert(BLOCK_SIZE % WARPS_M == 0, "BLOCK_SIZE must be divisible by WARPS_M");
+static_assert(BLOCK_SIZE % WARPS_N == 0, "BLOCK_SIZE must be divisible by WARPS_N");
+static_assert(REG_BLOCK_M * WARPS_M == BLOCK_SIZE, "REG_BLOCK_M * WARPS_M must equal BLOCK_SIZE");
+static_assert(REG_BLOCK_N * WARPS_N == BLOCK_SIZE, "REG_BLOCK_N * WARPS_N must equal BLOCK_SIZE");
+static_assert(REG_BLOCK_M % 2 == 0, "REG_BLOCK_M must be even (two row sub-tiles)");
+static_assert(REG_BLOCK_N % 2 == 0, "REG_BLOCK_N must be even (two col sub-tiles)");
+
 #define NUM_WARPS (WARPS_M * WARPS_N)
 #define NUM_THREADS (kittens::WARP_THREADS * NUM_WARPS)
 
@@ -22,21 +30,13 @@ using _gl_C = gl<bf16, -1, -1, -1, -1>;
 
 using G = kittens::group<NUM_WARPS>;
 
-struct micro_globals {
+// Default launch args for an epilogue with no extra inputs (noop, silu): the GEMM operands +
+// stream. An epilogue WITH inputs declares its own flat globals struct that starts with
+// {a,b,c} (so the positional pybind binding lists them first), then its own gl fields, then a
+// trailing `stream`. M/N/K and the launch geometry are derived in launch_micro, not stored.
+struct gemm_args_base {
     _gl_A a;
     _gl_B b;
     _gl_C c;
-    gl<float,1,1,1,1> alpha{nullptr,nullptr,nullptr,nullptr,nullptr};  // null default so bindings that omit alpha still aggregate-init
-    gl<bf16,-1,-1,-1,-1> r{nullptr,1,1,1,1};      // K5: per-row inv_rms [1,1,1,M] (last axis); null default so bindings that omit it still aggregate-init
-    gl<bf16,-1,-1,-1,-1> gamma{nullptr,1,1,1,1};  // K5: per-feature gamma [1,1,1,N]; null default
-    gl<bf16,-1,-1,-1,-1> residual{nullptr,1,1,1,1};  // Stage 2: skip connection [1,1,M,N]; null default
-    gl<float,-1,-1,-1,-1> partials{nullptr,1,1,1,1};  // Stage 2: per-(group,row) RMS partials [1,1,N/64,M] (row=M LAST axis, [C12d]); null default
-    gl<bf16,-1,-1,-1,-1> save{nullptr,1,1,1,1};  // Stage 2 (K4): saved h1 = A@B+residual [1,1,M,N] for K5; null default
     hipStream_t stream;
-    int M = a.rows();
-    int N = c.cols();
-    int K = a.cols();
-    dim3 grid()  { return dim3((N / BLOCK_SIZE) * (M / BLOCK_SIZE)); } 
-    dim3 block() { return dim3(NUM_THREADS); } 
-    size_t dynamic_shared_memory() { return MAX_SHARED_MEMORY; } 
 };

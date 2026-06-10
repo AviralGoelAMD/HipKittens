@@ -28,11 +28,6 @@ EPS = 1e-5
 SQ_RTOL, SQ_ATOL = 2e-2, 1.0
 
 
-def _dummies(m, n):
-    """The throwaway binding slots the positional aggregate-init needs ([C12b])."""
-    return (torch.ones(1, dtype=torch.float32, device="cuda"),   # alpha
-            torch.ones(m, dtype=DTYPE, device="cuda"),           # r
-            torch.ones(n, dtype=DTYPE, device="cuda"))           # gamma
 
 
 def test_partialrms(base, mod, m, n, k):
@@ -41,9 +36,7 @@ def test_partialrms(base, mod, m, n, k):
     groups = n // 64
     partials = torch.zeros((groups, m), dtype=torch.float32, device="cuda")
     c = init_empty((m, n))                                                            # unused C slot
-    alpha, r, gamma = _dummies(m, n)
-    residual = torch.zeros((m, n), dtype=DTYPE, device="cuda")
-    mod.dispatch_micro(A, Bt, c, alpha, r, gamma, residual, partials); torch.cuda.synchronize()
+    mod.dispatch_micro(A, Bt, c, partials); torch.cuda.synchronize()
     got = partials.sum(0)                       # [M] sum over the N/64 groups
     ref = D.float().pow(2).sum(-1)              # [M] same D -> isolates the reduction
     assert torch.isfinite(got).all() and got.abs().max() > 0, f"{(m,n,k)}: partials degenerate (~0/transposed => axis bug [C12d])"
@@ -58,8 +51,7 @@ def test_k4(mod, m, n, k):
     h1 = gemm_reference(A, Bt) + residual.float()                # fp32 ground-truth h1
     c = init_empty((m, n)); save = init_empty((m, n))
     partials = torch.zeros((n // 64, m), dtype=torch.float32, device="cuda")
-    alpha = torch.ones(1, dtype=torch.float32, device="cuda"); r = torch.ones(m, dtype=DTYPE, device="cuda")
-    mod.dispatch_micro(A, Bt, c, alpha, r, gamma, residual, partials, save); torch.cuda.synchronize()
+    mod.dispatch_micro(A, Bt, c, residual, gamma, partials, save); torch.cuda.synchronize()
     save_ok = torch.allclose(save.float(), h1, rtol=RTOL, atol=ATOL)
     out_ok  = torch.allclose(c.float(), h1 * gamma.float(), rtol=RTOL, atol=ATOL)
     sq_ok   = torch.allclose(partials.sum(0), h1.pow(2).sum(-1), rtol=SQ_RTOL, atol=SQ_ATOL)
@@ -74,8 +66,7 @@ def test_k4_aux(k4, aux, m, n, k):
     h1 = gemm_reference(A, Bt) + residual.float()
     c = init_empty((m, n)); save = init_empty((m, n))
     partials = torch.zeros((n // 64, m), dtype=torch.float32, device="cuda")
-    alpha = torch.ones(1, dtype=torch.float32, device="cuda"); r_dummy = torch.ones(m, dtype=DTYPE, device="cuda")
-    k4.dispatch_micro(A, Bt, c, alpha, r_dummy, gamma, residual, partials, save)
+    k4.dispatch_micro(A, Bt, c, residual, gamma, partials, save)
     r = torch.empty(m, dtype=DTYPE, device="cuda")
     aux.reduce(partials, r); torch.cuda.synchronize()
     ref = torch.rsqrt(h1.pow(2).mean(-1) + EPS)                  # 1/rms over the full N features

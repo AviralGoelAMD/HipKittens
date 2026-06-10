@@ -1,11 +1,8 @@
 #include "gemm_base.cuh"
 #include "pyutils/pyutils.cuh"
-void dispatch_micro(micro_globals g) {
-    unsigned long mem = g.dynamic_shared_memory();
-    hipFuncSetAttribute((void*)micro_tk<NoOpEpilogue>, hipFuncAttributeMaxDynamicSharedMemorySize, mem);
-    micro_tk<NoOpEpilogue><<<g.grid(), g.block(), mem, g.stream>>>(g, g.M, g.N, g.K);
-}
+void dispatch_micro(gemm_args_base g) { launch_micro<NoOpEpilogue, gemm_args_base>(g); }
 PYBIND11_MODULE(TK_MODULE_NAME, m) {
     m.doc() = "tk_kernel epilogue module";
-    py::bind_function<dispatch_micro>(m, "dispatch_micro", &micro_globals::a, &micro_globals::b, &micro_globals::c);
+    py::bind_function<dispatch_micro>(m, "dispatch_micro",
+        &gemm_args_base::a, &gemm_args_base::b, &gemm_args_base::c);
 }
