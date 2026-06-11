@@ -104,6 +104,23 @@ def test_residual_rms_aux(rr, aux):
     return ok
 
 
+def test_aux_reduce(aux):
+    """rms_reduce in isolation: synthetic per-(group,row) partials -> r = rsqrt(sum_groups/N + eps).
+    Independent of residual_rms (whose partials feed the composition test above), so a bug in the
+    cross-group sum or the rsqrt can't be masked by a compensating error upstream."""
+    ok = True
+    for (M, groups) in [(256, 4), (512, 16), (768, 2), (1024, 8)]:
+        N = groups * REG_BLOCK_N                                  # kernel derives N = partials.rows() * REG_BLOCK_N
+        partials = (torch.rand((groups, M), dtype=torch.float32, device="cuda") + 0.05) * 50.0   # >0, varied per (group,row)
+        r = torch.empty(M, dtype=DTYPE, device="cuda")
+        aux.reduce(partials, r); torch.cuda.synchronize()
+        ref = torch.rsqrt(partials.sum(0) / N + EPS)
+        e = (r.float() - ref).abs().max().item()
+        ok &= _p(f"aux_reduce M={M} groups={groups}",
+                 torch.allclose(r.float(), ref, rtol=SQ_RTOL, atol=1e-2), f"max_err={e:.3g}")
+    return ok
+
+
 def test_chain():
     ok = True
     for (M, K0, N, P) in CHAIN_SHAPES:
@@ -156,6 +173,7 @@ def main():
     print("[partialrms]");          allpass &= test_partialrms(noop, prms)
     print("[residual_rms]");        allpass &= test_residual_rms(rr)
     print("[residual_rms -> aux]"); allpass &= test_residual_rms_aux(rr, aux)
+    print("[aux_reduce]");          allpass &= test_aux_reduce(aux)
     print("[chain]");               allpass &= test_chain()
     print("[invariants]");          allpass &= test_invariants(noop, scale_m, rms_m, resadd_m, silu_m)
     print("ALL PASSED" if allpass else "SOME FAILED")
