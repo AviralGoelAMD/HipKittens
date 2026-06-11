@@ -19,14 +19,5 @@ results_*.json
 scratch/
 workloads/
 
-# Parked exploratory bindings (kept on disk, not tracked)
-bindings/gemm_spike.cpp
-bindings/gemm_sr_k5.cpp
-bindings/gemm_srlds_k5.cpp
-bindings/gemm_k4_fwd.cpp
-
-# Parked exploratory util scripts (kept on disk, not tracked)
-util/test_k5_sr.py
-
 # Dev design notes (not production docs)
 LAYOUT_NOTES.md
