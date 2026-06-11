@@ -38,7 +38,7 @@ def main():
         A, Bt = make_inputs(m, n, k)
         assert_sane("A", A); assert_sane("Bt", Bt)            # inits are non-degenerate
         C = init_empty((m, n))
-        gemm.dispatch_micro(A, Bt, C); torch.cuda.synchronize()
+        gemm.dispatch(A, Bt, C); torch.cuda.synchronize()
         assert_sane("C", C)                                    # result finite, non-zero, non-constant
         ref = gemm_reference(A, Bt)                             # fp32 ground truth
         cf = C.float()

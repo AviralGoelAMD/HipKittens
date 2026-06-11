@@ -41,14 +41,14 @@ def main():
         if idf is not None:
             args = idf(m, n, k)
             O = init_empty((m, n))
-            fk.dispatch_micro(A, Bt, O, *args); torch.cuda.synchronize()
+            fk.dispatch(A, Bt, O, *args); torch.cuda.synchronize()
             ok = torch.equal(O, Cn); allpass &= ok
             print(f"{str((m,n,k)):<20} identity      | bit_exact={ok} | {'PASS' if ok else 'FAIL'}")
 
         # (b) isolate vs ref(noop_base) across the param sweep
         for args in spec["sweep"](m, n, k):
             O = init_empty((m, n))
-            fk.dispatch_micro(A, Bt, O, *args); torch.cuda.synchronize()
+            fk.dispatch(A, Bt, O, *args); torch.cuda.synchronize()
             ref = init_empty((m, n))
             spec["ref"](Cn, ref, *args)
             ok = torch.allclose(O.float(), ref.float(), rtol=RTOL, atol=ATOL); allpass &= ok

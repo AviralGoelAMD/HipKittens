@@ -54,7 +54,7 @@ def _bench(fn, iters, warm):
 
 
 def run_one(kernel, shapes, iters, warm, llc_bytes, budget_bytes):
-    base = importlib.import_module("tk_kernel")        # base GEMM, writes D to HBM
+    base = importlib.import_module("tk_noop")          # pure-GEMM baseline (our no-op epilogue), writes D to HBM
     spec = EPILOGUES[kernel]
     fk = importlib.import_module(spec["module"])       # fused kernel
     rows = []
@@ -70,10 +70,10 @@ def run_one(kernel, shapes, iters, warm, llc_bytes, budget_bytes):
         args = spec["args"](m, n, k)
 
         def fused(i, _fk=fk, _a=args):
-            _fk.dispatch_micro(Ap[i % N], Btp[i % N], O, *_a)
+            _fk.dispatch(Ap[i % N], Btp[i % N], O, *_a)
 
         def unfused(i, _b=base, _s=spec, _a=args):
-            _b.dispatch_micro(Ap[i % N], Btp[i % N], D)   # GEMM -> D materialized in HBM
+            _b.dispatch(Ap[i % N], Btp[i % N], D)   # GEMM -> D materialized in HBM
             _s["ref"](D, O, *_a)                          # read D back, apply epilogue, write O
 
         fused(0);   torch.cuda.synchronize(); Of = O.clone()

@@ -10,9 +10,9 @@
 #
 # Run INSIDE the kreb container (needs hipcc + kreb env), from anywhere:
 #   util/build.sh                 # base only (tk_kernel)
-#   util/build.sh scale,k5        # base + tk_scale + tk_k5
+#   util/build.sh scale,rmsnorm_scale   # base + tk_scale + tk_rmsnorm_scale
 #   util/build.sh --no-base noop  # skip base, build tk_noop only
-#   GPU_TARGET=CDNA3 util/build.sh k5   # gfx942 instead of the CDNA4 default
+#   GPU_TARGET=CDNA3 util/build.sh rmsnorm_scale   # gfx942 instead of the CDNA4 default
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -46,7 +46,7 @@ for k in $kernels; do
   src=$(ls bindings/gemm_"${k}"*.cpp 2>/dev/null || true)
   n=$(printf '%s\n' $src | grep -c . || true)
   [ "$n" = 1 ] || { echo "build.sh: '$k' -> $n bindings match (need exactly 1): ${src:-<none>}" >&2; exit 3; }
-  kfile=$(basename "$src" .cpp); kfile="${kfile#gemm_}"   # e.g. gemm_k5_rms_scale.cpp -> k5_rms_scale
+  kfile=$(basename "$src" .cpp); kfile="${kfile#gemm_}"   # e.g. gemm_rmsnorm_scale.cpp -> rmsnorm_scale
   mod="tk_$k"
   echo "== $mod  (bindings/gemm_$kfile.cpp) =="
   rm -f "$mod"*.so
