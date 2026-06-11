@@ -22,6 +22,7 @@ import tk_residual_rms, tk_aux_rms, tk_rmsnorm_scale
 
 DTYPE = torch.bfloat16
 EPS = 1e-5   # matches the aux kernel's rsqrt(.. + eps) and layer_norm.py
+REG_BLOCK_N = 64   # per-warp-column group width; mirrors REG_BLOCK_N in epilogue_args.cuh (RMS partials group count = N // REG_BLOCK_N)
 
 
 def make_fused_rmsnorm_block(W0, W1):
@@ -39,7 +40,7 @@ def make_fused_rmsnorm_block(W0, W1):
         M = X.shape[0]
         c = torch.empty((M, N), dtype=DTYPE, device="cuda")
         save = torch.empty((M, N), dtype=DTYPE, device="cuda")        # h1 snapshot (unused in fwd; for bwd)
-        partials = torch.empty((N // 64, M), dtype=torch.float32, device="cuda")  # kernel overwrites every (group,row)
+        partials = torch.empty((N // REG_BLOCK_N, M), dtype=torch.float32, device="cuda")  # kernel overwrites every (group,row)
         tk_residual_rms.dispatch(X, W0t, c, residual, gamma, partials, save)
         r = torch.empty(M, dtype=DTYPE, device="cuda")
         tk_aux_rms.reduce(partials, r)
