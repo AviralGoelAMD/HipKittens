@@ -26,9 +26,6 @@ bindings/gemm_srlds_k5.cpp
 bindings/gemm_k4_fwd.cpp
 
 # Parked exploratory util scripts (kept on disk, not tracked)
-util/bench_decompose.py
-util/bench_money3.py
-util/bench_sr.py
 util/test_k5_sr.py
 
 # Dev design notes (not production docs)

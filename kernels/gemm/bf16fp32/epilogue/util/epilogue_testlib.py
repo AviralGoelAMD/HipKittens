@@ -1,7 +1,7 @@
 """epilogue_testlib.py - single source of truth for each epilogue kernel.
 
-Both the correctness harness (test_epilogue.py) and the fusion bench (fusion_win.py)
-import EPILOGUES from here, so a kernel is defined ONCE. Adding a fused kernel = one entry.
+Both the correctness suite (test_all.py) and the benchmark (bench.py) import EPILOGUES from
+here, so a kernel is defined ONCE. Adding a dim-preserving epilogue = one entry.
 
 Self-contained (no external deps beyond torch) so it can ship in the repo.
 
