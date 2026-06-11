@@ -12,14 +12,16 @@ constexpr int REG_BLOCK_N      = BLOCK_SIZE / WARPS_N;
 constexpr int HALF_REG_BLOCK_M = REG_BLOCK_M / 2;
 constexpr int HALF_REG_BLOCK_N = REG_BLOCK_N / 2;
 constexpr int DOT_SLICE        = 32;
+constexpr int   SUBTILES_PER_DIM = 2;     // accumulator fans out to SUBTILES_PER_DIM^2 sub-tiles (C_accum[2][2])
+constexpr float RMS_EPS          = 1e-5f; // RMSNorm epsilon: r = rsqrt(mean(x^2) + RMS_EPS)
 
 constexpr int K_ALIGN = 2 * K_STEP;   // base GEMM requires K to be a multiple of 128 (two K-steps)
 static_assert(BLOCK_SIZE % WARPS_M == 0, "BLOCK_SIZE must be divisible by WARPS_M");
 static_assert(BLOCK_SIZE % WARPS_N == 0, "BLOCK_SIZE must be divisible by WARPS_N");
 static_assert(REG_BLOCK_M * WARPS_M == BLOCK_SIZE, "REG_BLOCK_M * WARPS_M must equal BLOCK_SIZE");
 static_assert(REG_BLOCK_N * WARPS_N == BLOCK_SIZE, "REG_BLOCK_N * WARPS_N must equal BLOCK_SIZE");
-static_assert(REG_BLOCK_M % 2 == 0, "REG_BLOCK_M must be even (two row sub-tiles)");
-static_assert(REG_BLOCK_N % 2 == 0, "REG_BLOCK_N must be even (two col sub-tiles)");
+static_assert(REG_BLOCK_M % SUBTILES_PER_DIM == 0, "REG_BLOCK_M must split into SUBTILES_PER_DIM row sub-tiles");
+static_assert(REG_BLOCK_N % SUBTILES_PER_DIM == 0, "REG_BLOCK_N must split into SUBTILES_PER_DIM col sub-tiles");
 
 #define NUM_WARPS (WARPS_M * WARPS_N)
 #define NUM_THREADS (kittens::WARP_THREADS * NUM_WARPS)

@@ -1,33 +1,34 @@
 #pragma once
 #include <type_traits>
-#include "epilogue_args.cuh"
+#include "epilogue_base.cuh"    // block_coords, subtile_coords
 using namespace kittens;
 
-// Tile (rank-2) epilogue ops on the col_l accumulator. Load coords MIRROR store_C exactly
-// (the same {batch,depth,row_tile,col_tile} the accumulator subtiles store to), so the loaded
-// tile lines up element-for-element with each subtile.
-//
-// residual_add: C += residual, where `residual` is a full [M,N] bf16 tile (the skip
-// connection). Each subtile is loaded from g.residual with store_C's coords, converting
-// bf16 -> fp32 on the way in (col_layout load, global_to_register.cuh:134), then added.
+// Tile (rank-2) epilogue ops on the col_l accumulator. Coordinates come from block_coords (the
+// single tile->global mapping), so a loaded/stored tile lines up element-for-element with each
+// accumulator sub-tile.
+
+// residual_add: C += residual, where `residual` is a full [M,N] bf16 skip connection. Each
+// sub-tile is loaded with the accumulator's own coords, converting bf16 -> fp32 on the way in.
 template<typename G, typename Accum>
 __device__ inline void residual_add(const G& g, Accum& C, int row,int col,int wr,int wc){
-    using Tile = std::remove_all_extents_t<Accum>;     // rt_fl<64,32,col_l,rt_16x16_s>
+    using Tile = std::remove_all_extents_t<Accum>;
+    subtile_coords co = block_coords(row,col,wr,wc);
     Tile t;
-    load(t, g.residual, {0,0,(row*2)*WARPS_M+wr,         col*2*WARPS_N+wc});         add(C[0][0], C[0][0], t);
-    load(t, g.residual, {0,0,(row*2)*WARPS_M+wr,         col*2*WARPS_N+WARPS_N+wc}); add(C[0][1], C[0][1], t);
-    load(t, g.residual, {0,0,(row*2)*WARPS_M+WARPS_M+wr, col*2*WARPS_N+wc});         add(C[1][0], C[1][0], t);
-    load(t, g.residual, {0,0,(row*2)*WARPS_M+WARPS_M+wr, col*2*WARPS_N+WARPS_N+wc}); add(C[1][1], C[1][1], t);
+    load(t, g.residual, {0,0,co.m[0],co.n[0]}); add(C[0][0], C[0][0], t);
+    load(t, g.residual, {0,0,co.m[0],co.n[1]}); add(C[0][1], C[0][1], t);
+    load(t, g.residual, {0,0,co.m[1],co.n[0]}); add(C[1][0], C[1][0], t);
+    load(t, g.residual, {0,0,co.m[1],co.n[1]}); add(C[1][1], C[1][1], t);
 }
 
-// save_tile: persist the current accumulator to g.save (HBM) as a snapshot for a LATER kernel.
-// K4 saves h1 = A@B + residual so K5 can normalize it after the aux kernel computes 1/rms (r is
-// not known until this kernel finishes + aux runs). Mirror of store_C, to the `save` gl (fp32
-// reg -> bf16). C is read-only; the kernel keeps transforming C in registers afterward.
+// save_tile: persist the current accumulator to g.save (HBM) for a later kernel. The residual-RMS
+// GEMM saves h1 = A@B + residual so the RMSNorm-scale GEMM can normalize it once the aux kernel
+// has produced 1/rms (not known until this kernel + aux finish). C is read-only here; the kernel
+// keeps transforming C in registers afterward.
 template<typename G, typename Accum>
 __device__ inline void save_tile(const G& g, const Accum& C, int row,int col,int wr,int wc){
-    store(g.save, C[0][0], {0,0,(row*2)*WARPS_M+wr,         col*2*WARPS_N+wc});
-    store(g.save, C[0][1], {0,0,(row*2)*WARPS_M+wr,         col*2*WARPS_N+WARPS_N+wc});
-    store(g.save, C[1][0], {0,0,(row*2)*WARPS_M+WARPS_M+wr, col*2*WARPS_N+wc});
-    store(g.save, C[1][1], {0,0,(row*2)*WARPS_M+WARPS_M+wr, col*2*WARPS_N+WARPS_N+wc});
+    subtile_coords co = block_coords(row,col,wr,wc);
+    store(g.save, C[0][0], {0,0,co.m[0],co.n[0]});
+    store(g.save, C[0][1], {0,0,co.m[0],co.n[1]});
+    store(g.save, C[1][0], {0,0,co.m[1],co.n[0]});
+    store(g.save, C[1][1], {0,0,co.m[1],co.n[1]});
 }

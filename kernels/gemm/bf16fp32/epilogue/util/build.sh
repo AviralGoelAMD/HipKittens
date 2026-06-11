@@ -2,10 +2,10 @@
 # build.sh - clean-build the base GEMM (tk_kernel) + named fused epilogue variants.
 #
 # Removes stale .so first (the Makefile depends only on the .cpp, NOT the .cuh headers,
-# so it will NOT rebuild on a header edit -> stale .so silently masks fixes; see plan [C12c]),
+# so it will NOT rebuild on a header edit -> stale .so silently masks fixes),
 # and copies the base tk_kernel .so next to the bench/test scripts (the unfused path needs it).
 #
-# Kernel names are the SHORT registry/module names (noop, scale, k5, ...); the matching
+# Kernel names are the SHORT registry/module names (noop, scale, rmsnorm_scale, ...); the matching
 # bindings/gemm_<name>*.cpp is found by glob, and the module is named tk_<name>.
 #
 # Run INSIDE the kreb container (needs hipcc + kreb env), from anywhere:

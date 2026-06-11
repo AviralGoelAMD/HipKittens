@@ -54,8 +54,6 @@ void gemm_kernel(const Globals g, int M, int N, int K) {
     const int warp_col = warp_id % 4;
     const int num_tiles = K / K_STEP;
 
-    int condition = (threadIdx.x == 0 && blockIdx.x == 0 && blockIdx.y == 0 && blockIdx.z == 0) ;
-
     /********** Readfirstlane hoisting **********/
     const bf16* a_base = (bf16*)&g.a[{0, 0, 0, 0}];
     const bf16* b_base = (bf16*)&g.b[{0, 0, 0, 0}];

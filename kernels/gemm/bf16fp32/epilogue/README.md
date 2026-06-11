@@ -62,7 +62,7 @@ Touch nothing else (not `gemm_base.cuh`, not `epilogue_args.cuh`, not other bind
 - `util/test_gemm.py` — base GEMM vs fp32 ground truth.
 - `util/test_epilogue.py <name>` — registry-driven per-epilogue correctness (identity bit-exact +
   param sweep), isolated against the no-op GEMM baseline.
-- `util/test_stage2.py`, `util/test_block.py` — the multi-kernel money-pattern chain.
+- `util/test_stage2.py`, `util/test_block.py` — the multi-kernel fused chain.
 - Tolerance: bf16 outputs compared to an fp32 reference at `rtol=1e-2, atol=1e-1`; runners seed
   `torch.manual_seed(0)` so results are reproducible.
 - `util/epilogue_testlib.py` is the **registry only** (definitions); correctness (`test_*`) and

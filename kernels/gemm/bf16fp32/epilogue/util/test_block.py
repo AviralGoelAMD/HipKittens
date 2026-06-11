@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""test_block.py - end-to-end correctness for the K4->aux->K5 money pattern (Task 2.5).
+"""test_block.py - end-to-end correctness for the residual_rms -> aux -> rmsnorm_scale chain.
 
 Asserts the fused 3-kernel chain equals torch  rmsnorm(X@W0 + residual, gamma) @ W1 --
 the GEMM-Residual-RMSNorm-GEMM Transformer sublayer, with the [M,N] intermediate never
-round-tripping HBM. Clears Checkpoint 2c.
+round-tripping HBM.
 
 Run from the epilogue dir after building tk_residual_rms, tk_aux_rms, tk_rmsnorm_scale:
     python3 util/test_block.py
@@ -14,7 +14,7 @@ import torch
 from epilogue_testlib import init_randn
 from block_chain import fused_rmsnorm_block, EPS
 
-# (M, K0, N, P): M/N/P % 256 (256x256 tiling); K0 & N are the K4/K5 contraction dims -> % 128 ([C13])
+# (M, K0, N, P): M/N/P % 256 (256x256 tiling); K0 & N are the GEMM contraction dims -> % 128
 SHAPES = [(256, 256, 256, 256), (512, 512, 512, 512), (512, 1024, 512, 768), (768, 256, 768, 512)]
 RTOL, ATOL = 2e-2, 2e-1   # two chained bf16 GEMMs + a bf16 intermediate -> looser than a single GEMM
 
