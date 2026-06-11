@@ -35,14 +35,24 @@ def _coerce(x):
     return x.to(device="cuda", dtype=DTYPE).contiguous()
 
 
-def _prep(A, B):
-    """Cast A,B to bf16; transpose B for the kernel; allocate the output C."""
-    A = _coerce(A); B = _coerce(B)
-    (M, K), (K2, N) = A.shape, B.shape
-    assert K == K2, f"inner dims disagree: A is {tuple(A.shape)}, B is {tuple(B.shape)}"
-    Bt = B.t().contiguous()                          # kernel computes A @ Bt.t() == A @ B
+def _prep(A, B, b_transposed=False):
+    """Cast A to bf16; get the kernel's transposed B operand; allocate the output C.
+    b_transposed=True: B is already that operand ([N,K]) -- skip the per-call copy."""
+    A = _coerce(A)
+    if b_transposed:
+        Bt = _coerce(B); N, K2 = Bt.shape         # already the kernel operand
+    else:
+        B = _coerce(B); K2, N = B.shape
+        Bt = B.t().contiguous()                   # kernel computes A @ Bt.t() == A @ B
+    M, K = A.shape
+    assert K == K2, f"inner dims disagree: A is {tuple(A.shape)}, B implies K={K2}"
     C = torch.empty(M, N, dtype=DTYPE, device="cuda")
     return A, Bt, C
+
+
+def transpose(W):
+    """Transpose+contiguous a static weight ONCE (CUDA/bf16), to reuse via run(..., b_transposed=True)."""
+    return W.to(device="cuda", dtype=DTYPE).t().contiguous()
 
 
 def available():
@@ -50,16 +60,17 @@ def available():
     return sorted(EPILOGUES)
 
 
-def run(name, A, B, *extra):
+def run(name, A, B, *extra, b_transposed=False):
     """GEMM + the named epilogue. `extra` are that epilogue's own inputs, in binding order
     (e.g. "scale" -> alpha; "rmsnorm_scale" -> r, gamma; "residual" -> residual). Returns the
-    output tensor."""
+    output tensor. b_transposed=True: B is already the kernel's transposed operand (pass a weight
+    transposed once via hk.transpose(W)) -- skips the per-call weight copy on a hot path."""
     try:
         spec = EPILOGUES[name]
     except KeyError:
         raise ValueError(f"unknown epilogue '{name}'; available: {available()}")
     mod = importlib.import_module(spec["module"])
-    A, Bt, C = _prep(A, B)
+    A, Bt, C = _prep(A, B, b_transposed)
     mod.dispatch(A, Bt, C, *[_coerce(x) for x in extra])
     torch.cuda.synchronize()
     return C
