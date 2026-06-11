@@ -31,21 +31,21 @@ Touch nothing else (not `gemm_base.cuh`, not `epilogue_args.cuh`, not other bind
        }
    };
    ```
-   The `apply` signature is enforced at compile time by a `static_assert` in `micro_tk`; a
+   The `apply` signature is enforced at compile time by a `static_assert` in `gemm_kernel`; a
    malformed epilogue gives *"Epilogue must define: static apply(...)"*, not a template-spew.
-3. **Dispatch + binding** — one line each; `launch_micro` does the shape preconditions + checked
+3. **Dispatch + binding** — one line each; `launch` does the shape preconditions + checked
    HIP launch. Bind base + your own fields only (no positional dummy slots).
    ```cpp
-   void dispatch_micro(MyGlobals g) { launch_micro<MyEpilogue, MyGlobals>(g); }
+   void dispatch(MyGlobals g) { launch<MyEpilogue, MyGlobals>(g); }
    PYBIND11_MODULE(TK_MODULE_NAME, m) {
-       py::bind_function<dispatch_micro>(m, "dispatch_micro",
+       py::bind_function<dispatch>(m, "dispatch",
            &MyGlobals::a, &MyGlobals::b, &MyGlobals::c, &MyGlobals::my_input);
    }
    ```
 4. **Registry entry** — add `"myop": {module, args, ref, identity, sweep, label, hbm_passes}` to
    `EPILOGUES` in `util/epilogue_testlib.py`. It is then automatically correctness-tested by
-   `util/test_epilogue.py myop` and benched by `util/fusion_win.py` — no new script.
-5. **Build + test (gfx950):** `util/build.sh myop` then `python3 util/test_epilogue.py myop`.
+   the unified suite (`python3 util/test_all.py`) and benched by `util/bench.py` — no new script.
+5. **Build + test (gfx950):** `util/build.sh myop` then `python3 util/test_all.py`.
 
 ## Invariants enforced
 
@@ -59,14 +59,22 @@ Touch nothing else (not `gemm_base.cuh`, not `epilogue_args.cuh`, not other bind
 
 ## Testing
 
-- `util/test_gemm.py` — base GEMM vs fp32 ground truth.
-- `util/test_epilogue.py <name>` — registry-driven per-epilogue correctness (identity bit-exact +
-  param sweep), isolated against the no-op GEMM baseline.
-- `util/test_stage2.py`, `util/test_block.py` — the multi-kernel fused chain.
-- Tolerance: bf16 outputs compared to an fp32 reference at `rtol=1e-2, atol=1e-1`; runners seed
-  `torch.manual_seed(0)` so results are reproducible.
-- `util/epilogue_testlib.py` is the **registry only** (definitions); correctness (`test_*`) and
-  performance (`fusion_win.py`) are separate runners that both import it. Do not merge a
-  correctness assertion and a timing loop into one script.
+- `python3 util/test_all.py` — the single correctness suite: base GEMM, every registry epilogue
+  (identity + sweep), the multi-output kernels (partialrms/residual_rms/aux), the fused chain, and
+  math invariants. Deterministic (seeded); each case prints PASS/FAIL.
+- `python3 util/bench.py` — the benchmark: HK fused vs torch (and Triton for the chain), cold-cache
+  median + the HBM bytes the fusion saves.
+- Tolerance: bf16 outputs vs an fp32 reference at `rtol=1e-2, atol=1e-1`; the chain uses a normwise
+  relative error (`2e-2`). Runners seed `torch.manual_seed(0)`.
+- `util/epilogue_testlib.py` is the **registry only** (definitions); `test_all.py` (correctness) and
+  `bench.py` (performance) both import it. Do not merge a correctness assertion and a timing loop
+  into one script.
 
-<!-- The naming convention, magic-number policy, and comment style are finalized in later passes. -->
+## Conventions
+- **Naming:** epilogue structs `<Operation>Epilogue`; their launch args `<Operation>Globals`; module
+  / binding file / registry key all agree (`tk_<op>` / `gemm_<op>.cpp` / `"<op>"`). No paper-index
+  names (k4/k5) or vestigial `micro_*`.
+- **Constants:** no magic numbers in logic — tiling, `RMS_EPS`, and `SUBTILES_PER_DIM` are
+  `constexpr` in `epilogue_args.cuh`.
+- **Comments:** production voice — explain the *why* (axis/layout invariants); no dev-log tags
+  (`[Cx]`, Stage/Task) or paper-kernel labels.
