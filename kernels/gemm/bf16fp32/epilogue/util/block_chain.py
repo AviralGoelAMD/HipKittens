@@ -24,30 +24,33 @@ DTYPE = torch.bfloat16
 EPS = 1e-5   # matches the aux kernel's rsqrt(.. + eps) and layer_norm.py
 
 
-def fused_rmsnorm_block(X, W0, residual, gamma, W1):
-    """out = rmsnorm(X@W0 + residual, gamma) @ W1, fully fused. All tensors bf16, CUDA, contiguous.
-    X[M,K0], W0[K0,N], residual[M,N], gamma[N], W1[N,P] -> out[M,P].
-    Shape constraints: M,N,P % 256 (256x256 tiling); K0,N % 128 (the GEMM contraction dims)."""
-    M, K0 = X.shape
-    N = W0.shape[1]
-    P = W1.shape[1]
-    W0t = W0.t().contiguous()                          # base GEMM takes B transposed (A @ Bt.t() == A@B)
+def make_fused_rmsnorm_block(W0, W1):
+    """Prepare the sublayer once: transpose the (static) weights a SINGLE time and hold them.
+    Returns forward(X, residual, gamma) -> out[M,P]. If the weights change (e.g. after an
+    optimizer step) rebuild via make_fused_rmsnorm_block(...) -- the transpose is NOT auto-cached,
+    so an in-place weight update can never go stale silently.
+    W0[K0,N], W1[N,P] ; X[M,K0], residual[M,N], gamma[N]. M,N,P % 256 ; K0,N % 128."""
+    W0t = W0.t().contiguous()                          # base GEMM takes B transposed; weights static -> once
     W1t = W1.t().contiguous()
+    N, P = W0.shape[1], W1.shape[1]
+    gamma_ones = torch.ones(P, dtype=DTYPE, device="cuda")   # 2nd GEMM: gamma already folded into c -> ones
 
-    # --- residual_rms: h1 = X@W0 + residual ; c = h1*gamma ; partials = Sigma(h1^2) over column groups ---
-    c = torch.empty((M, N), dtype=DTYPE, device="cuda")
-    save = torch.empty((M, N), dtype=DTYPE, device="cuda")       # h1 snapshot (unused in fwd; for bwd)
-    partials = torch.zeros((N // 64, M), dtype=torch.float32, device="cuda")  # 64 = REG_BLOCK_N (column-group width)
-    tk_residual_rms.dispatch(X, W0t, c, residual, gamma, partials, save)
+    def forward(X, residual, gamma):
+        M = X.shape[0]
+        c = torch.empty((M, N), dtype=DTYPE, device="cuda")
+        save = torch.empty((M, N), dtype=DTYPE, device="cuda")        # h1 snapshot (unused in fwd; for bwd)
+        partials = torch.empty((N // 64, M), dtype=torch.float32, device="cuda")  # kernel overwrites every (group,row)
+        tk_residual_rms.dispatch(X, W0t, c, residual, gamma, partials, save)
+        r = torch.empty(M, dtype=DTYPE, device="cuda")
+        tk_aux_rms.reduce(partials, r)
+        out = torch.empty((M, P), dtype=DTYPE, device="cuda")
+        tk_rmsnorm_scale.dispatch(c, W1t, out, r, gamma_ones)         # r post-applied; gamma already in c
+        torch.cuda.synchronize()
+        return out
+    return forward
 
-    # --- aux: partials -> r = 1/rms(h1) per row ---
-    r = torch.empty(M, dtype=DTYPE, device="cuda")
-    tk_aux_rms.reduce(partials, r)
 
-    # --- rmsnorm_scale: out = (c @ W1) * r[:,None] ; gamma already folded into c above -> ones here ---
-    out = torch.empty((M, P), dtype=DTYPE, device="cuda")
-    gamma_ones = torch.ones(P, dtype=DTYPE, device="cuda")
-    tk_rmsnorm_scale.dispatch(c, W1t, out, r, gamma_ones)
-
-    torch.cuda.synchronize()
-    return out
+def fused_rmsnorm_block(X, W0, residual, gamma, W1):
+    """One-shot functional form (transposes the weights each call) -- for tests / one-offs.
+    For a hot loop or a model, build once with make_fused_rmsnorm_block(W0, W1) and reuse forward()."""
+    return make_fused_rmsnorm_block(W0, W1)(X, residual, gamma)
