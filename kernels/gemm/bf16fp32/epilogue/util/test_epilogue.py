@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import torch
 from epilogue_testlib import EPILOGUES, make_inputs, gemm_base, init_empty, assert_sane, RTOL, ATOL, DTYPE
 
-SHAPES = [(256, 256, 256), (256, 512, 128), (512, 256, 256), (768, 768, 256),   # small / single-block (K % 128, [C13])
+SHAPES = [(256, 256, 256), (256, 512, 128), (512, 256, 256), (768, 768, 256),   # small / single-block (K % 128)
           (2048, 1024, 512), (512, 1024, 1024), (2048, 2048, 2048), (8192, 8192, 8192)]
 
 

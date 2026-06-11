@@ -75,7 +75,7 @@ EPILOGUES = {
         "label":    lambda args: "resadd",
         "hbm_passes": 2,
     },
-    "silu": {  # Stage 3.1: SiLU activation  out = silu(A@B) = x * sigmoid(x)
+    "silu": {  # SiLU activation  out = silu(A@B) = x * sigmoid(x)
         "module": "tk_silu",
         "args":     lambda m, n, k: (),
         "ref":      lambda D, out: out.copy_((D.float() * torch.sigmoid(D.float())).to(DTYPE)),
@@ -84,7 +84,7 @@ EPILOGUES = {
         "label":    lambda args: "silu",
         "hbm_passes": 2,
     },
-    # K5 example (when it lands):
+    # Example of a future epilogue entry:
     # "rmsnorm": {
     #     "module": "tk_rmsnorm",
     #     "args":  lambda m,n,k: (init_randn((n,)),),

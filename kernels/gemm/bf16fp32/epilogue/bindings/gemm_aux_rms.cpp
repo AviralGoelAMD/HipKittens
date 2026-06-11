@@ -2,11 +2,11 @@
 #include "pyutils/pyutils.cuh"
 #include <stdexcept>
 
-// Stage 2 Task 2.4 binding: tk_aux_rms.reduce(partials, r) -> writes per-row 1/rms into r.
+// tk_aux_rms.reduce(partials, r) -> writes per-row 1/rms into r.
 void dispatch(aux_globals g) {
     // The exported reduce() interface has all-dynamic gl dims, so make_gl performs NO shape check:
     // a mis-shaped caller (e.g. partials as [1,1,M,N/64]) would silently reduce the wrong axis.
-    // Enforce the layout contract here (aux review #1, [C1]/[C12d]):
+    //   Enforce the layout contract here:
     //   partials = [1,1, N/REG_BLOCK_N, M] (row=M on the LAST axis),  r = [1,1, 1, M].
     const int M = g.r.cols();
     if (g.r.rows() != 1)

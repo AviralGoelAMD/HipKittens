@@ -2,7 +2,7 @@
 """test_gemm.py [module=tk_kernel] - base GEMM correctness vs fp32 ground truth.
 
 This is HipKittens' shipped `kernels/gemm/bf16fp32/test.py`, REUSED with its two proven
-calibration bugs fixed ([C11]) and non-degeneracy guards added:
+calibration bugs fixed and non-degeneracy guards added:
   - reference = fp32 ground truth `A.float()@B.float()`, NOT a bf16 `torch.matmul(A,B)` that
     carries the same ~0.4% bf16 error;
   - tolerance = `rtol=1e-2, atol=1e-1`, NOT a bare `rtol` (bare-rtol-no-atol is unsatisfiable
@@ -22,7 +22,7 @@ import torch
 from epilogue_testlib import make_inputs, init_empty, gemm_reference, assert_sane, RTOL, ATOL
 
 SHAPES = [
-    (256, 256, 256), (256, 512, 128), (512, 256, 256), (768, 768, 256),  # small / single-block (K % 128, see [C13])
+    (256, 256, 256), (256, 512, 128), (512, 256, 256), (768, 768, 256),  # small / single-block (K % 128)
     (2048, 1024, 512), (4096, 8192, 2048), (8192, 2048, 4096),           # rectangular (reused from HK test.py)
     (512, 1024, 1024), (8192, 8192, 8192),                               # square
 ]
