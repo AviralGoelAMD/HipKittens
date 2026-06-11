@@ -1,6 +1,6 @@
 # bf16→fp32 GEMM epilogues
 
-One hand-scheduled GEMM mainloop (`gemm_base.cuh`, `micro_tk`) made generic over a compile-time
+One hand-scheduled GEMM mainloop (`gemm_base.cuh`, `gemm_kernel`) made generic over a compile-time
 **epilogue**: a small struct whose `apply()` runs between the mainloop and the stores, fusing
 elementwise / normalization / reduction work into the GEMM so the [M,N] intermediate never
 round-trips HBM. No virtual calls — each epilogue is a separate template instantiation.
@@ -49,10 +49,10 @@ Touch nothing else (not `gemm_base.cuh`, not `epilogue_args.cuh`, not other bind
 
 ## Invariants enforced
 
-- **Shapes:** `M, N` multiples of `BLOCK_SIZE` (256); `K` a multiple of 128 — `launch_micro`
+- **Shapes:** `M, N` multiples of `BLOCK_SIZE` (256); `K` a multiple of 128 — `launch`
   throws otherwise (a bad `K` would silently corrupt results). Tiling relations are
   `static_assert`-checked in `epilogue_args.cuh`.
-- **HIP errors:** every HIP call in `launch_micro` is wrapped in HK's `CHECK_CUDA_ERROR`
+- **HIP errors:** every HIP call in `launch` is wrapped in HK's `CHECK_CUDA_ERROR`
   (`pyutils/util.cuh`), which reports `file:line` + the HIP error string.
 - **Layout:** the tile↔global coordinate fan-out is a single helper, `block_coords` in
   `ops/epilogue_base.cuh`; `store_C` / `residual_add` / `save_tile` all derive from it.

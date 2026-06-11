@@ -16,10 +16,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) 
 import torch
 from epilogue_testlib import (EPILOGUES, make_inputs, gemm_base, gemm_reference,
                               init_empty, init_randn, assert_sane, _f32, RTOL, ATOL, DTYPE)
-from block_chain import fused_rmsnorm_block
+from block_chain import fused_rmsnorm_block, EPS, REG_BLOCK_N
 
 torch.manual_seed(0)
-EPS = 1e-5
 SQ_RTOL, SQ_ATOL = 2e-2, 1.0                 # partials are an fp32 sum over K -> looser than bf16 out
 # small / single-block (incl. the K%128 edge 256x512x128), non-square, and larger shapes
 SHAPES      = [(256,256,256), (256,512,128), (512,256,256), (768,768,256), (2048,1024,512), (512,1024,1024)]
@@ -70,7 +69,7 @@ def test_partialrms(noop, prms):
     for (m, n, k) in SHAPES:
         A, Bt = make_inputs(m, n, k)
         D = init_empty((m, n)); noop.dispatch(A, Bt, D); torch.cuda.synchronize()   # the SAME D it squares
-        partials = torch.zeros((n // 64, m), dtype=torch.float32, device="cuda"); c = init_empty((m, n))
+        partials = torch.zeros((n // REG_BLOCK_N, m), dtype=torch.float32, device="cuda"); c = init_empty((m, n))
         prms.dispatch(A, Bt, c, partials); torch.cuda.synchronize()
         got, ref = partials.sum(0), D.float().pow(2).sum(-1)
         okc = bool(torch.isfinite(got).all() and got.abs().max() > 0 and torch.allclose(got, ref, rtol=SQ_RTOL, atol=SQ_ATOL))
@@ -83,7 +82,7 @@ def test_residual_rms(rr):
     for (m, n, k) in SHAPES:
         A, Bt = make_inputs(m, n, k)
         residual = init_randn((m, n)); gamma = init_randn((n,)); h1 = gemm_reference(A, Bt) + residual.float()
-        c = init_empty((m, n)); save = init_empty((m, n)); partials = torch.zeros((n // 64, m), dtype=torch.float32, device="cuda")
+        c = init_empty((m, n)); save = init_empty((m, n)); partials = torch.zeros((n // REG_BLOCK_N, m), dtype=torch.float32, device="cuda")
         rr.dispatch(A, Bt, c, residual, gamma, partials, save); torch.cuda.synchronize()
         s = torch.allclose(save.float(), h1, rtol=RTOL, atol=ATOL)
         o = torch.allclose(c.float(), h1 * gamma.float(), rtol=RTOL, atol=ATOL)
@@ -97,7 +96,7 @@ def test_residual_rms_aux(rr, aux):
     for (m, n, k) in SHAPES:
         A, Bt = make_inputs(m, n, k)
         residual = init_randn((m, n)); gamma = init_randn((n,)); h1 = gemm_reference(A, Bt) + residual.float()
-        c = init_empty((m, n)); save = init_empty((m, n)); partials = torch.zeros((n // 64, m), dtype=torch.float32, device="cuda")
+        c = init_empty((m, n)); save = init_empty((m, n)); partials = torch.zeros((n // REG_BLOCK_N, m), dtype=torch.float32, device="cuda")
         rr.dispatch(A, Bt, c, residual, gamma, partials, save)
         r = torch.empty(m, dtype=DTYPE, device="cuda"); aux.reduce(partials, r); torch.cuda.synchronize()
         ref = torch.rsqrt(h1.pow(2).mean(-1) + EPS)
