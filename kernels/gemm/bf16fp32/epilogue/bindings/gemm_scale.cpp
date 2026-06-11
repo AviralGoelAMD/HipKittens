@@ -16,9 +16,9 @@ struct ScaleEpilogue {
     }
 };
 
-void dispatch_micro(ScaleGlobals g) { launch_micro<ScaleEpilogue, ScaleGlobals>(g); }
+void dispatch(ScaleGlobals g) { launch<ScaleEpilogue, ScaleGlobals>(g); }
 PYBIND11_MODULE(TK_MODULE_NAME, m) {
     m.doc() = "tk_kernel scale epilogue";
-    py::bind_function<dispatch_micro>(m, "dispatch_micro",
+    py::bind_function<dispatch>(m, "dispatch",
         &ScaleGlobals::a, &ScaleGlobals::b, &ScaleGlobals::c, &ScaleGlobals::alpha);
 }

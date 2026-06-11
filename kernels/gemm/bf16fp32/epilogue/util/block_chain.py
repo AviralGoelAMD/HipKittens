@@ -4,9 +4,9 @@ Chains the three Stage-2 kernels so the [M,N] intermediate never round-trips HBM
 
     out = rmsnorm(X @ W0 + residual, gamma) @ W1
 
-  K4   (tk_k4)      : h1 = X@W0 + residual ;  c = h1*gamma ;  partials = per-(group,row) Sigma(h1^2)
+  K4   (tk_residual_rms) : h1 = X@W0 + residual ;  c = h1*gamma ;  partials = per-(group,row) Sigma(h1^2)
   aux  (tk_aux_rms) : partials            -> r = 1/rms(h1)   (per row, the cross-group combine, [C1])
-  K5   (tk_k5)      : out = (c @ W1) * r[:,None]              (gamma already folded in by K4)
+  K5   (tk_rmsnorm_scale) : out = (c @ W1) * r[:,None]              (gamma already folded in by K4)
 
 Axis reasoning (why gamma is in K4 and only r is in K5):
   rmsnorm(h1,gamma) @ W1 = (h1 * r * gamma) @ W1.
@@ -18,7 +18,7 @@ Axis reasoning (why gamma is in K4 and only r is in K5):
   Hence K5 runs with gamma = ones (a no-op gamma slot) and the real r.
 """
 import torch
-import tk_k4, tk_aux_rms, tk_k5
+import tk_residual_rms, tk_aux_rms, tk_rmsnorm_scale
 
 DTYPE = torch.bfloat16
 EPS = 1e-5   # matches the aux kernel's rsqrt(.. + eps) and layer_norm.py
@@ -38,7 +38,7 @@ def fused_rmsnorm_block(X, W0, residual, gamma, W1):
     c = torch.empty((M, N), dtype=DTYPE, device="cuda")
     save = torch.empty((M, N), dtype=DTYPE, device="cuda")       # h1 snapshot (unused in fwd; for bwd)
     partials = torch.zeros((N // 64, M), dtype=torch.float32, device="cuda")
-    tk_k4.dispatch_micro(X, W0t, c, residual, gamma, partials, save)
+    tk_residual_rms.dispatch(X, W0t, c, residual, gamma, partials, save)
 
     # --- aux: partials -> r = 1/rms(h1) per row ---
     r = torch.empty(M, dtype=DTYPE, device="cuda")
@@ -47,7 +47,7 @@ def fused_rmsnorm_block(X, W0, residual, gamma, W1):
     # --- K5: out = (c @ W1) * r[:,None] ; gamma already applied in K4 -> ones here ---
     out = torch.empty((M, P), dtype=DTYPE, device="cuda")
     gamma_ones = torch.ones(P, dtype=DTYPE, device="cuda")
-    tk_k5.dispatch_micro(c, W1t, out, r, gamma_ones)
+    tk_rmsnorm_scale.dispatch(c, W1t, out, r, gamma_ones)
 
     torch.cuda.synchronize()
     return out

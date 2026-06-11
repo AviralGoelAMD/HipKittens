@@ -16,9 +16,9 @@ struct PartialRMSEpilogue {
     }
 };
 
-void dispatch_micro(PartialRMSGlobals g) { launch_micro<PartialRMSEpilogue, PartialRMSGlobals>(g); }
+void dispatch(PartialRMSGlobals g) { launch<PartialRMSEpilogue, PartialRMSGlobals>(g); }
 PYBIND11_MODULE(TK_MODULE_NAME, m) {
     m.doc() = "tk_kernel partial RMS sum-of-squares epilogue";
-    py::bind_function<dispatch_micro>(m, "dispatch_micro",
+    py::bind_function<dispatch>(m, "dispatch",
         &PartialRMSGlobals::a, &PartialRMSGlobals::b, &PartialRMSGlobals::c, &PartialRMSGlobals::partials);
 }

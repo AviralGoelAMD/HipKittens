@@ -5,7 +5,7 @@ using namespace kittens;
 // Auxiliary RMS reduce (Stage 2 Task 2.4): turn K4's per-(64-col group, row) partials into the
 // per-row inverse RMS. One thread per row sums the N/64 group-partials ([C1]) into the full
 // Sigma(x^2), then r[row] = rsqrt(Sigma / N + eps). eps = 1e-5 (matches layer_norm.py).
-// Standalone kernel (not a micro_tk epilogue) -> its own tiny globals struct.
+// Standalone kernel (not a gemm_kernel epilogue) -> its own tiny globals struct.
 //
 // partials: [1,1, N/64, M] (groups x rows; row = last axis, [C12d]).   r: [1,1, 1, M] (1/rms).
 struct aux_globals {

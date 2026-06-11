@@ -3,7 +3,7 @@
 #include <stdexcept>
 
 // Stage 2 Task 2.4 binding: tk_aux_rms.reduce(partials, r) -> writes per-row 1/rms into r.
-void dispatch_micro(aux_globals g) {
+void dispatch(aux_globals g) {
     // The exported reduce() interface has all-dynamic gl dims, so make_gl performs NO shape check:
     // a mis-shaped caller (e.g. partials as [1,1,M,N/64]) would silently reduce the wrong axis.
     // Enforce the layout contract here (aux review #1, [C1]/[C12d]):
@@ -20,5 +20,5 @@ void dispatch_micro(aux_globals g) {
 }
 PYBIND11_MODULE(TK_MODULE_NAME, m) {
     m.doc() = "tk aux RMS reduce: per-(group,row) partials -> per-row 1/rms";
-    py::bind_function<dispatch_micro>(m, "reduce", &aux_globals::partials, &aux_globals::r);
+    py::bind_function<dispatch>(m, "reduce", &aux_globals::partials, &aux_globals::r);
 }

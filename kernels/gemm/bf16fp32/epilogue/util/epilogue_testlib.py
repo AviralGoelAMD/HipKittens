@@ -57,8 +57,8 @@ EPILOGUES = {
         "label":    lambda args: f"a={args[0].item():g}",
         "hbm_passes": 2,
     },
-    "k5": {  # RMSNorm scale: precomputed per-row r + per-feature gamma
-        "module": "tk_k5",
+    "rmsnorm_scale": {  # RMSNorm scale: precomputed per-row r + per-feature gamma
+        "module": "tk_rmsnorm_scale",
         "args":     lambda m, n, k: (init_randn((m,)), init_randn((n,))),  # r [1,1,1,M], gamma [1,1,1,N]
         "ref":      lambda D, out, r, gamma: out.copy_((D.float() * r.float().view(-1, 1) * gamma.float().view(1, -1)).to(DTYPE)),
         "identity": lambda m, n, k: (torch.ones((m,), dtype=DTYPE, device="cuda"), torch.ones((n,), dtype=DTYPE, device="cuda")),
@@ -66,8 +66,8 @@ EPILOGUES = {
         "label":    lambda args: "rms+gamma",
         "hbm_passes": 2,
     },
-    "resadd": {  # residual add  out = (A@B) + residual  ([M,N] skip connection)
-        "module": "tk_resadd",
+    "residual_add": {  # residual add  out = (A@B) + residual  ([M,N] skip connection)
+        "module": "tk_residual_add",
         "args":     lambda m, n, k: (init_randn((m, n)),),
         "ref":      lambda D, out, residual: out.copy_((D.float() + residual.float()).to(DTYPE)),
         "identity": lambda m, n, k: (torch.zeros((m, n), dtype=DTYPE, device="cuda"),),  # residual=0 -> == noop
@@ -108,7 +108,7 @@ def make_inputs(m, n, k):
 def gemm_base(noop_mod, A, Bt, m, n):
     """Run the no-op (pure GEMM) kernel -> the bf16 baseline each epilogue is isolated against."""
     C = init_empty((m, n))
-    noop_mod.dispatch_micro(A, Bt, C)
+    noop_mod.dispatch(A, Bt, C)
     torch.cuda.synchronize()
     return C
 

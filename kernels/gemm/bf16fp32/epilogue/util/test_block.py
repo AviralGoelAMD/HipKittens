@@ -5,7 +5,7 @@ Asserts the fused 3-kernel chain equals torch  rmsnorm(X@W0 + residual, gamma) @
 the GEMM-Residual-RMSNorm-GEMM Transformer sublayer, with the [M,N] intermediate never
 round-tripping HBM. Clears Checkpoint 2c.
 
-Run from the epilogue dir after building tk_k4, tk_aux_rms, tk_k5:
+Run from the epilogue dir after building tk_residual_rms, tk_aux_rms, tk_rmsnorm_scale:
     python3 util/test_block.py
 """
 import os, sys

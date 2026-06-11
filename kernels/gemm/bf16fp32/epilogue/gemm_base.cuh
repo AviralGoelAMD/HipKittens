@@ -4,11 +4,11 @@
 #include "pyutils/util.cuh"   // CHECK_CUDA_ERROR (HK's HIP error-check helper)
 
 // The epilogue contract (a static apply with the right signature) is enforced by a static_assert
-// inside micro_tk, where the accumulator type is in scope.
+// inside gemm_kernel, where the accumulator type is in scope.
 
 template<typename Epilogue = NoOpEpilogue, typename Globals = gemm_args_base>
 __global__ __launch_bounds__(NUM_THREADS, 2)
-void micro_tk(const Globals g, int M, int N, int K) {
+void gemm_kernel(const Globals g, int M, int N, int K) {
     // Epilogue contract (precondition): apply() must be callable with our accumulator type.
     using Accum = rt_fl<HALF_REG_BLOCK_M, HALF_REG_BLOCK_N, col_l, rt_16x16_s>[2][2];
     static_assert(requires(const Globals& gg, Accum& acc) { Epilogue::apply(gg, acc, 0,0,0,0); },
@@ -291,17 +291,17 @@ void micro_tk(const Globals g, int M, int N, int K) {
     Epilogue::apply(g, C_accum, row, col, warp_row, warp_col);
 }
 
-// Single launch path for every micro_tk epilogue: fail-loud shape preconditions + checked HIP
+// Single launch path for every gemm_kernel epilogue: fail-loud shape preconditions + checked HIP
 // calls. Bindings call this instead of hand-writing the launch.
 template<typename Epilogue, typename Globals>
-void launch_micro(Globals g) {
+void launch(Globals g) {
     const int M = g.a.rows(), N = g.c.cols(), K = g.a.cols();
     if (M % BLOCK_SIZE || N % BLOCK_SIZE)
         throw std::runtime_error("GEMM: M and N must be multiples of BLOCK_SIZE (256)");
     if (K % K_ALIGN)
         throw std::runtime_error("GEMM: K must be a multiple of 128");
     const size_t mem = MAX_SHARED_MEMORY;
-    CHECK_CUDA_ERROR(hipFuncSetAttribute((void*)micro_tk<Epilogue, Globals>, hipFuncAttributeMaxDynamicSharedMemorySize, mem));
-    micro_tk<Epilogue, Globals><<<dim3((N / BLOCK_SIZE) * (M / BLOCK_SIZE)), dim3(NUM_THREADS), mem, g.stream>>>(g, M, N, K);
+    CHECK_CUDA_ERROR(hipFuncSetAttribute((void*)gemm_kernel<Epilogue, Globals>, hipFuncAttributeMaxDynamicSharedMemorySize, mem));
+    gemm_kernel<Epilogue, Globals><<<dim3((N / BLOCK_SIZE) * (M / BLOCK_SIZE)), dim3(NUM_THREADS), mem, g.stream>>>(g, M, N, K);
     CHECK_CUDA_ERROR(hipGetLastError());
 }

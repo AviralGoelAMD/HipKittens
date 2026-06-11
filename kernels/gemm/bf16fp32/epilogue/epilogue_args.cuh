@@ -33,7 +33,7 @@ using G = kittens::group<NUM_WARPS>;
 // Default launch args for an epilogue with no extra inputs (noop, silu): the GEMM operands +
 // stream. An epilogue WITH inputs declares its own flat globals struct that starts with
 // {a,b,c} (so the positional pybind binding lists them first), then its own gl fields, then a
-// trailing `stream`. M/N/K and the launch geometry are derived in launch_micro, not stored.
+// trailing `stream`. M/N/K and the launch geometry are derived in launch(), not stored.
 struct gemm_args_base {
     _gl_A a;
     _gl_B b;
