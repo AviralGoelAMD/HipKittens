@@ -90,8 +90,9 @@ def run_chain(iters, warm):
         gamma = init_randn((N,)); W1 = init_randn((N, P))
         def hk(i):   fused_rmsnorm_block(X, W0, res, gamma, W1)
         def torch_(i):
-            h1 = X.float() @ W0.float() + res.float()
-            hn = (h1 * torch.rsqrt(h1.pow(2).mean(-1, keepdim=True) + EPS) * gamma.float()).to(DTYPE)
+            h1 = X @ W0 + res                               # bf16 GEMM (matches HK / Triton; was fp32 -> unfair)
+            var = h1.float().pow(2).mean(-1, keepdim=True)  # RMS reduction in fp32 (as HK / Triton do)
+            hn = (h1 * torch.rsqrt(var + EPS) * gamma.float()).to(DTYPE)
             _ = hn @ W1
         row = {"shape": [M, K0, N, P], "hk_ms": round(_bench(hk, iters, warm), 4),
                "torch_ms": round(_bench(torch_, iters, warm), 4)}
