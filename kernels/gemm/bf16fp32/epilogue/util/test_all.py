@@ -32,13 +32,25 @@ def _p(tag, ok, detail=""):
     return bool(ok)
 
 
+def _rms_io(m, n):
+    """Output buffers shared by the residual-RMS kernels: c (gamma-scaled output), save (h1), and
+    partials (per-(group, row) sum-of-squares, shape [N/REG_BLOCK_N, M])."""
+    c = init_empty((m, n))
+    save = init_empty((m, n))
+    partials = torch.zeros((n // REG_BLOCK_N, m), dtype=torch.float32, device="cuda")
+    return c, save, partials
+
+
 def test_base_gemm(noop):
     ok = True
     for (m, n, k) in GEMM_SHAPES:
-        A, Bt = make_inputs(m, n, k); C = init_empty((m, n))
-        noop.dispatch(A, Bt, C); torch.cuda.synchronize()
+        A, Bt = make_inputs(m, n, k)
+        C = init_empty((m, n))
+        noop.dispatch(A, Bt, C)
+        torch.cuda.synchronize()
         assert_sane("C", C)
-        ref = gemm_reference(A, Bt); e = (C.float() - ref).abs().max().item()
+        ref = gemm_reference(A, Bt)
+        e = (C.float() - ref).abs().max().item()
         ok &= _p(f"gemm {(m,n,k)}", torch.allclose(C.float(), ref, rtol=RTOL, atol=ATOL), f"max_err={e:.3g}")
     return ok
 
@@ -49,15 +61,20 @@ def test_registry(noop):
         fk = importlib.import_module(spec["module"])
         for (m, n, k) in SHAPES:
             A, Bt = make_inputs(m, n, k)
-            Cn = gemm_base(noop, A, Bt, m, n)                       # bf16 no-op baseline (D)
+            Cn = gemm_base(noop, A, Bt, m, n)                   # bf16 no-op baseline (D)
             idf = spec["identity"]
-            if idf is not None:
-                args = idf(m, n, k); O = init_empty((m, n))
-                fk.dispatch(A, Bt, O, *args); torch.cuda.synchronize()
+            if idf is not None:                                # identity args -> output must equal noop, bit for bit
+                args = idf(m, n, k)
+                O = init_empty((m, n))
+                fk.dispatch(A, Bt, O, *args)
+                torch.cuda.synchronize()
                 ok &= _p(f"{name} identity {(m,n,k)}", torch.equal(O, Cn))
-            for args in spec["sweep"](m, n, k):
-                O = init_empty((m, n)); fk.dispatch(A, Bt, O, *args); torch.cuda.synchronize()
-                ref = init_empty((m, n)); spec["ref"](Cn, ref, *args)
+            for args in spec["sweep"](m, n, k):                # value sweep -> output must match ref(noop_baseline)
+                O = init_empty((m, n))
+                fk.dispatch(A, Bt, O, *args)
+                torch.cuda.synchronize()
+                ref = init_empty((m, n))
+                spec["ref"](Cn, ref, *args)
                 e = (O.float() - ref.float()).abs().max().item()
                 ok &= _p(f"{name} {spec['label'](args)} {(m,n,k)}",
                          torch.allclose(O.float(), ref.float(), rtol=RTOL, atol=ATOL), f"max_err={e:.3g}")
@@ -68,11 +85,17 @@ def test_partialrms(noop, prms):
     ok = True
     for (m, n, k) in SHAPES:
         A, Bt = make_inputs(m, n, k)
-        D = init_empty((m, n)); noop.dispatch(A, Bt, D); torch.cuda.synchronize()   # the SAME D it squares
-        partials = torch.zeros((n // REG_BLOCK_N, m), dtype=torch.float32, device="cuda"); c = init_empty((m, n))
-        prms.dispatch(A, Bt, c, partials); torch.cuda.synchronize()
-        got, ref = partials.sum(0), D.float().pow(2).sum(-1)
-        okc = bool(torch.isfinite(got).all() and got.abs().max() > 0 and torch.allclose(got, ref, rtol=SQ_RTOL, atol=SQ_ATOL))
+        D = init_empty((m, n))
+        noop.dispatch(A, Bt, D)                                # the SAME D the kernel squares
+        torch.cuda.synchronize()
+        c = init_empty((m, n))
+        partials = torch.zeros((n // REG_BLOCK_N, m), dtype=torch.float32, device="cuda")
+        prms.dispatch(A, Bt, c, partials)
+        torch.cuda.synchronize()
+        got = partials.sum(0)
+        ref = D.float().pow(2).sum(-1)
+        okc = bool(torch.isfinite(got).all() and got.abs().max() > 0
+                   and torch.allclose(got, ref, rtol=SQ_RTOL, atol=SQ_ATOL))
         ok &= _p(f"partialrms {(m,n,k)}", okc)
     return ok
 
@@ -81,9 +104,12 @@ def test_residual_rms(rr):
     ok = True
     for (m, n, k) in SHAPES:
         A, Bt = make_inputs(m, n, k)
-        residual = init_randn((m, n)); gamma = init_randn((n,)); h1 = gemm_reference(A, Bt) + residual.float()
-        c = init_empty((m, n)); save = init_empty((m, n)); partials = torch.zeros((n // REG_BLOCK_N, m), dtype=torch.float32, device="cuda")
-        rr.dispatch(A, Bt, c, residual, gamma, partials, save); torch.cuda.synchronize()
+        residual = init_randn((m, n))
+        gamma = init_randn((n,))
+        h1 = gemm_reference(A, Bt) + residual.float()
+        c, save, partials = _rms_io(m, n)
+        rr.dispatch(A, Bt, c, residual, gamma, partials, save)
+        torch.cuda.synchronize()
         s = torch.allclose(save.float(), h1, rtol=RTOL, atol=ATOL)
         o = torch.allclose(c.float(), h1 * gamma.float(), rtol=RTOL, atol=ATOL)
         q = torch.allclose(partials.sum(0), h1.pow(2).sum(-1), rtol=SQ_RTOL, atol=SQ_ATOL)
@@ -95,10 +121,14 @@ def test_residual_rms_aux(rr, aux):
     ok = True
     for (m, n, k) in SHAPES:
         A, Bt = make_inputs(m, n, k)
-        residual = init_randn((m, n)); gamma = init_randn((n,)); h1 = gemm_reference(A, Bt) + residual.float()
-        c = init_empty((m, n)); save = init_empty((m, n)); partials = torch.zeros((n // REG_BLOCK_N, m), dtype=torch.float32, device="cuda")
+        residual = init_randn((m, n))
+        gamma = init_randn((n,))
+        h1 = gemm_reference(A, Bt) + residual.float()
+        c, save, partials = _rms_io(m, n)
         rr.dispatch(A, Bt, c, residual, gamma, partials, save)
-        r = torch.empty(m, dtype=DTYPE, device="cuda"); aux.reduce(partials, r); torch.cuda.synchronize()
+        r = torch.empty(m, dtype=DTYPE, device="cuda")
+        aux.reduce(partials, r)
+        torch.cuda.synchronize()
         ref = torch.rsqrt(h1.pow(2).mean(-1) + EPS)
         ok &= _p(f"residual_rms->aux {(m,n,k)}", torch.allclose(r.float(), ref, rtol=SQ_RTOL, atol=1e-2))
     return ok
@@ -110,10 +140,11 @@ def test_aux_reduce(aux):
     cross-group sum or the rsqrt can't be masked by a compensating error upstream."""
     ok = True
     for (M, groups) in [(256, 4), (512, 16), (768, 2), (1024, 8)]:
-        N = groups * REG_BLOCK_N                                  # kernel derives N = partials.rows() * REG_BLOCK_N
-        partials = (torch.rand((groups, M), dtype=torch.float32, device="cuda") + 0.05) * 50.0   # >0, varied per (group,row)
+        N = groups * REG_BLOCK_N                               # kernel derives N = partials.rows() * REG_BLOCK_N
+        partials = (torch.rand((groups, M), dtype=torch.float32, device="cuda") + 0.05) * 50.0   # >0, varied
         r = torch.empty(M, dtype=DTYPE, device="cuda")
-        aux.reduce(partials, r); torch.cuda.synchronize()
+        aux.reduce(partials, r)
+        torch.cuda.synchronize()
         ref = torch.rsqrt(partials.sum(0) / N + EPS)
         e = (r.float() - ref).abs().max().item()
         ok &= _p(f"aux_reduce M={M} groups={groups}",
@@ -124,8 +155,11 @@ def test_aux_reduce(aux):
 def test_chain():
     ok = True
     for (M, K0, N, P) in CHAIN_SHAPES:
-        X = init_randn((M, K0)); W0 = init_randn((K0, N)); residual = init_randn((M, N))
-        gamma = init_randn((N,)); W1 = init_randn((N, P))
+        X = init_randn((M, K0))
+        W0 = init_randn((K0, N))
+        residual = init_randn((M, N))
+        gamma = init_randn((N,))
+        W1 = init_randn((N, P))
         out = fused_rmsnorm_block(X, W0, residual, gamma, W1)
         h1 = X.float() @ W0.float() + residual.float()
         hn = (h1 * torch.rsqrt(h1.pow(2).mean(-1, keepdim=True) + EPS)) * gamma.float()
@@ -139,20 +173,36 @@ def test_invariants(noop, scale_m, rms_m, resadd_m, silu_m):
     """Properties that hold for ANY input -> catch bug classes fixed cases miss."""
     ok = True
     m, n, k = 512, 1024, 256
-    A, Bt = make_inputs(m, n, k); D = gemm_base(noop, A, Bt, m, n).float()
+    A, Bt = make_inputs(m, n, k)
+    D = gemm_base(noop, A, Bt, m, n).float()
+
     # scale is linear in alpha: f(2a) == 2 f(a)
-    O1 = init_empty((m, n)); scale_m.dispatch(A, Bt, O1, _f32(1.0))
-    O2 = init_empty((m, n)); scale_m.dispatch(A, Bt, O2, _f32(2.0)); torch.cuda.synchronize()
+    O1 = init_empty((m, n))
+    scale_m.dispatch(A, Bt, O1, _f32(1.0))
+    O2 = init_empty((m, n))
+    scale_m.dispatch(A, Bt, O2, _f32(2.0))
+    torch.cuda.synchronize()
     ok &= _p("invariant scale linearity", torch.allclose(O2.float(), 2 * O1.float(), rtol=2e-2, atol=1e-1))
+
     # residual add is additive: out == D + residual
-    res = init_randn((m, n)); Or = init_empty((m, n)); resadd_m.dispatch(A, Bt, Or, res); torch.cuda.synchronize()
+    res = init_randn((m, n))
+    Or = init_empty((m, n))
+    resadd_m.dispatch(A, Bt, Or, res)
+    torch.cuda.synchronize()
     ok &= _p("invariant residual additivity", torch.allclose(Or.float(), D + res.float(), rtol=2e-2, atol=2e-1))
+
     # silu(x) == x * sigmoid(x)
-    Os = init_empty((m, n)); silu_m.dispatch(A, Bt, Os); torch.cuda.synchronize()
+    Os = init_empty((m, n))
+    silu_m.dispatch(A, Bt, Os)
+    torch.cuda.synchronize()
     ok &= _p("invariant silu==x*sigmoid(x)", torch.allclose(Os.float(), D * torch.sigmoid(D), rtol=2e-2, atol=1e-1))
+
     # rmsnorm with r=1/rms(D), gamma=1 -> every output row has ~unit RMS
-    r = torch.rsqrt(D.pow(2).mean(-1) + EPS).to(DTYPE); g1 = torch.ones(n, dtype=DTYPE, device="cuda")
-    Orm = init_empty((m, n)); rms_m.dispatch(A, Bt, Orm, r, g1); torch.cuda.synchronize()
+    r = torch.rsqrt(D.pow(2).mean(-1) + EPS).to(DTYPE)
+    g1 = torch.ones(n, dtype=DTYPE, device="cuda")
+    Orm = init_empty((m, n))
+    rms_m.dispatch(A, Bt, Orm, r, g1)
+    torch.cuda.synchronize()
     row_rms = Orm.float().pow(2).mean(-1).sqrt()
     ok &= _p("invariant rmsnorm unit-RMS rows", torch.allclose(row_rms, torch.ones(m, device="cuda"), rtol=5e-2, atol=5e-2))
     return ok
@@ -167,15 +217,22 @@ def main():
     prms     = importlib.import_module("tk_partialrms")
     rr       = importlib.import_module("tk_residual_rms")
     aux      = importlib.import_module("tk_aux_rms")
+
+    # (section label, test fn, args) -- run in order, AND the pass flags together
+    suite = [
+        ("[base GEMM]",           test_base_gemm,        (noop,)),
+        ("[registry epilogues]",  test_registry,         (noop,)),
+        ("[partialrms]",          test_partialrms,       (noop, prms)),
+        ("[residual_rms]",        test_residual_rms,     (rr,)),
+        ("[residual_rms -> aux]", test_residual_rms_aux, (rr, aux)),
+        ("[aux_reduce]",          test_aux_reduce,       (aux,)),
+        ("[chain]",               test_chain,            ()),
+        ("[invariants]",          test_invariants,       (noop, scale_m, rms_m, resadd_m, silu_m)),
+    ]
     allpass = True
-    print("[base GEMM]");           allpass &= test_base_gemm(noop)
-    print("[registry epilogues]");  allpass &= test_registry(noop)
-    print("[partialrms]");          allpass &= test_partialrms(noop, prms)
-    print("[residual_rms]");        allpass &= test_residual_rms(rr)
-    print("[residual_rms -> aux]"); allpass &= test_residual_rms_aux(rr, aux)
-    print("[aux_reduce]");          allpass &= test_aux_reduce(aux)
-    print("[chain]");               allpass &= test_chain()
-    print("[invariants]");          allpass &= test_invariants(noop, scale_m, rms_m, resadd_m, silu_m)
+    for label, fn, fargs in suite:
+        print(label)
+        allpass &= fn(*fargs)
     print("ALL PASSED" if allpass else "SOME FAILED")
     return allpass
 
