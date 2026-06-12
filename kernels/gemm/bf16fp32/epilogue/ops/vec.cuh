@@ -1,6 +1,6 @@
 #pragma once
 #include <type_traits>
-#include "epilogue_base.cuh"    // block_coords, subtile_coords
+#include "base.cuh"    // block_coords, subtile_coords
 using namespace kittens;
 
 // Vector-broadcast epilogue ops on the col_l accumulator tiles.

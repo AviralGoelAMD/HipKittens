@@ -1,6 +1,6 @@
 #pragma once
 #include <type_traits>
-#include "epilogue_base.cuh"    // block_coords, subtile_coords
+#include "base.cuh"    // block_coords, subtile_coords
 using namespace kittens;
 
 // Tile (rank-2) epilogue ops on the col_l accumulator. Coordinates come from block_coords (the

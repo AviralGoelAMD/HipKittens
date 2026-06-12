@@ -18,13 +18,3 @@ __device__ inline void store_C(const G& g, const Accum& C, int row,int col,int w
     store(g.c, C[1][0], {0,0,co.m[1],co.n[0]});
     store(g.c, C[1][1], {0,0,co.m[1],co.n[1]});
 }
-// Identity epilogue (store only). Lives here, NOT in bindings/gemm_noop.cpp like the other
-// epilogue structs, because it is gemm_kernel's DEFAULT Epilogue
-// (gemm_base.cuh: template<typename Epilogue = NoOpEpilogue>), which every binding includes --
-// moving it would leave that default referencing an undefined type and break every binding.
-struct NoOpEpilogue {
-    template<typename G, typename Accum>
-    static __device__ inline void apply(const G& g, Accum& C, int row,int col,int wr,int wc){
-        store_C(g, C, row, col, wr, wc);
-    }
-};
