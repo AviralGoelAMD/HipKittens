@@ -35,11 +35,20 @@ except Exception:
 
 
 def _pool_size(per_set, llc, budget):
+    """How many distinct input sets to rotate through for COLD-cache timing.
+
+    Re-running a kernel on the same A/B serves later iterations from the LLC, hiding the real HBM
+    cost. So we cycle through N copies (callers index `Ap[i % N]`) sized to OVERFLOW the last-level
+    cache, forcing each re-read back to HBM. N = enough copies to exceed the LLC (`llc//per_set + 1`),
+    capped by a memory budget (`budget//per_set`) so we don't OOM. If one set already exceeds the
+    LLC, a single copy is cold on its own."""
     if per_set >= llc: return 1
     return max(1, min(llc // per_set + 1, max(1, budget // per_set)))
 
 
 def _bench(fn, iters=50, warm=10):
+    """Median per-iteration GPU time over `iters` runs (after `warm` warmups), via CUDA events.
+    Median, not mean, to reject scheduling outliers."""
     for i in range(warm): fn(i)
     torch.cuda.synchronize()
     st = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
@@ -58,7 +67,7 @@ def run_epilogue(kernel, iters, warm):
     for (m, n, k) in SHAPES:
         per_set = (m * k + n * k) * DSIZE
         N = _pool_size(per_set, LLC_BYTES, BUDGET)
-        Ap, Btp = zip(*[make_inputs(m, n, k) for _ in range(N)])
+        Ap, Btp = zip(*[make_inputs(m, n, k) for _ in range(N)])   # cold-cache pool; rotate via [i % N]
         D = init_empty((m, n)); O = init_empty((m, n)); args = spec["args"](m, n, k)
         fused   = lambda i: fk.dispatch(Ap[i % N], Btp[i % N], O, *args)
         def unfused(i):
