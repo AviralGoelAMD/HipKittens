@@ -1,4 +1,4 @@
-#include "auxiliary_reduce.cuh"
+#include "aux_reduce.cuh"
 #include "pyutils/pyutils.cuh"
 #include <stdexcept>
 

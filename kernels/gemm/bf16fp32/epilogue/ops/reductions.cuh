@@ -1,6 +1,6 @@
 #pragma once
 #include <type_traits>
-#include "epilogue_base.cuh"    // block_coords
+#include "base.cuh"    // block_coords
 using namespace kittens;
 
 // Per-row partial sum-of-squares for RMSNorm, split across warp-columns.
