@@ -311,3 +311,21 @@ void launch(Globals g) {
     gemm_kernel<Epilogue, Globals><<<dim3((N / BLOCK_SIZE) * (M / BLOCK_SIZE)), dim3(NUM_THREADS), mem, g.stream>>>(g, M, N, K);
     CHECK_CUDA_ERROR(hipGetLastError());
 }
+
+// Launch for dim-reducing epilogues (SwiGLU): the GEMM N comes from operand b ([N_gemm, K]), not c.
+// The kernel still computes the full N_gemm-wide accumulator; the epilogue's store narrows it to c.
+template<typename Epilogue, typename Globals>
+void launch_swiglu(Globals g) {
+    const int M = g.a.rows(), N = g.b.rows(), K = g.a.cols();   // N = 2*d_ff (the true GEMM width)
+    const int N_out = g.c.cols();                                // d_ff
+    if (M % BLOCK_SIZE || N % BLOCK_SIZE)
+        throw std::runtime_error("SwiGLU: M and N(=2*d_ff) must be multiples of BLOCK_SIZE (256)");
+    if (K % K_ALIGN)
+        throw std::runtime_error("SwiGLU: K must be a multiple of 128");
+    if (N != 2 * N_out)
+        throw std::runtime_error("SwiGLU: b.rows() must equal 2*c.cols() (2*d_ff vs d_ff)");
+    const size_t mem = MAX_SHARED_MEMORY;
+    CHECK_CUDA_ERROR(hipFuncSetAttribute((void*)gemm_kernel<Epilogue, Globals>, hipFuncAttributeMaxDynamicSharedMemorySize, mem));
+    gemm_kernel<Epilogue, Globals><<<dim3((N / BLOCK_SIZE) * (M / BLOCK_SIZE)), dim3(NUM_THREADS), mem, g.stream>>>(g, M, N, K);
+    CHECK_CUDA_ERROR(hipGetLastError());
+}
