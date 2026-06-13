@@ -36,7 +36,7 @@ def _coerce(x):
 
 
 def _prep(A, B, b_transposed=False):
-    """Cast A to bf16; get the kernel's transposed B operand; allocate the output C.
+    """Cast A to bf16; get the kernel's transposed B operand; return (A, Bt, M, N, K).
     b_transposed=True: B is already that operand ([N,K]) -- skip the per-call copy."""
     A = _coerce(A)
     if b_transposed:
@@ -46,8 +46,7 @@ def _prep(A, B, b_transposed=False):
         Bt = B.t().contiguous()                   # kernel computes A @ Bt.t() == A @ B
     M, K = A.shape
     assert K == K2, f"inner dims disagree: A is {tuple(A.shape)}, B implies K={K2}"
-    C = torch.empty(M, N, dtype=DTYPE, device="cuda")
-    return A, Bt, C
+    return A, Bt, M, N, K
 
 
 def transpose(W):
@@ -70,7 +69,10 @@ def run(name, A, B, *extra, b_transposed=False):
     except KeyError:
         raise ValueError(f"unknown epilogue '{name}'; available: {available()}")
     mod = importlib.import_module(spec["module"])
-    A, Bt, C = _prep(A, B, b_transposed)
+    A, Bt, M, N, K = _prep(A, B, b_transposed)
+    oh = spec.get("out_shape")
+    out_rows, out_cols = oh(M, N, K) if oh else (M, N)
+    C = torch.empty(out_rows, out_cols, dtype=DTYPE, device="cuda")
     mod.dispatch(A, Bt, C, *[_coerce(x) for x in extra])
     torch.cuda.synchronize()
     return C

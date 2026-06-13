@@ -97,6 +97,13 @@ EPILOGUES = {
 }
 
 
+def out_shape(name, m, n, k):
+    """(rows, cols) of the kernel output. Default identity (m, n); dim-changing epilogues
+    (e.g. swiglu) override via an 'out_shape' callable in their registry entry."""
+    f = EPILOGUES[name].get("out_shape")
+    return f(m, n, k) if f else (m, n)
+
+
 def make_inputs(m, n, k):
     """A and the pre-transposed Bt (contiguous, kept alive past the async launch)."""
     A = init_randn((m, k))
