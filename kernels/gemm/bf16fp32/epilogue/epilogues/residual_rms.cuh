@@ -16,8 +16,8 @@ struct ResidualRMSPartialsGlobals {
     hipStream_t stream;
 };
 struct ResidualRMSPartialsEpilogue {
-    template<typename G, typename Accum>
-    static __device__ inline void apply(const G& g, Accum& C, int row,int col,int wr,int wc){
+    template<typename Globals, typename Accum>
+    static __device__ inline void apply(const Globals& g, Accum& C, int row,int col,int wr,int wc){
         residual_add(g, C, row,col,wr,wc);        // C = A@B + residual = h1
         save_tile(g, C, row,col,wr,wc);           // persist h1 -> g.save
         partial_row_sum_sq(g, C, row,col,wr,wc);  // Sigma(h1^2) per (row, col group) -> g.partials

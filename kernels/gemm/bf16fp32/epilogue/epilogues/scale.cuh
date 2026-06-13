@@ -9,8 +9,8 @@ struct ScaleGlobals {
     hipStream_t stream;
 };
 struct ScaleEpilogue {
-    template<typename G, typename Accum>
-    static __device__ inline void apply(const G& g, Accum& C, int row,int col,int wr,int wc){
+    template<typename Globals, typename Accum>
+    static __device__ inline void apply(const Globals& g, Accum& C, int row,int col,int wr,int wc){
         apply_scale(g, C);                       // alpha * C  (tile x 1-elem-gl scalar)
         store_C(g, C, row, col, wr, wc);         // epilogue owns the store
     }

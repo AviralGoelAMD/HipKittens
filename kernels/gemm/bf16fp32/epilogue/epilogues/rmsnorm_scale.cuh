@@ -11,8 +11,8 @@ struct RMSNormScaleGlobals {
     hipStream_t stream;
 };
 struct RMSNormScaleEpilogue {
-    template<typename G, typename Accum>
-    static __device__ inline void apply(const G& g, Accum& C, int row,int col,int wr,int wc){
+    template<typename Globals, typename Accum>
+    static __device__ inline void apply(const Globals& g, Accum& C, int row,int col,int wr,int wc){
         apply_inv_rms(g, C, row,col,wr,wc);   // per-row 1/rms  (col_vec, mul_row)
         apply_gamma  (g, C, row,col,wr,wc);   // per-feature gamma (row_vec, mul_col)
         store_C(g, C, row,col,wr,wc);

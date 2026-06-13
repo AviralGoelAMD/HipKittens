@@ -12,8 +12,8 @@ using namespace kittens;
 // sub-tile holds.
 
 // per-row 1/rms: r is gl[1,1,1,M] (M on the last axis); col_vec + mul_row.
-template<typename G, typename Accum>
-__device__ inline void apply_inv_rms(const G& g, Accum& C, int row,int col,int wr,int wc){
+template<typename Globals, typename Accum>
+__device__ inline void apply_inv_rms(const Globals& g, Accum& C, int row,int col,int wr,int wc){
     using Tile = std::remove_all_extents_t<Accum>;
     using CV   = typename Tile::col_vec;                 // one value per row
     subtile_coords co = block_coords(row,col,wr,wc);
@@ -25,8 +25,8 @@ __device__ inline void apply_inv_rms(const G& g, Accum& C, int row,int col,int w
 }
 
 // per-feature gamma: gamma is gl[1,1,1,N]; row_vec (one value per col) + mul_col.
-template<typename G, typename Accum>
-__device__ inline void apply_gamma(const G& g, Accum& C, int row,int col,int wr,int wc){
+template<typename Globals, typename Accum>
+__device__ inline void apply_gamma(const Globals& g, Accum& C, int row,int col,int wr,int wc){
     using Tile = std::remove_all_extents_t<Accum>;
     using RV   = typename Tile::row_vec;                 // one value per col
     subtile_coords co = block_coords(row,col,wr,wc);
@@ -39,8 +39,8 @@ __device__ inline void apply_gamma(const G& g, Accum& C, int row,int col,int wr,
 
 // scalar alpha: a 1-element gl, broadcast-multiplied into every sub-tile. Coordinate-free
 // (a pure scalar, no block_coords load), so it takes no row/col/wr/wc.
-template<typename G, typename Accum>
-__device__ inline void apply_scale(const G& g, Accum& C){
+template<typename Globals, typename Accum>
+__device__ inline void apply_scale(const Globals& g, Accum& C){
     float a = g.alpha[{0,0,0,0}];
     mul(C[0][0], C[0][0], a); mul(C[0][1], C[0][1], a);
     mul(C[1][0], C[1][0], a); mul(C[1][1], C[1][1], a);
