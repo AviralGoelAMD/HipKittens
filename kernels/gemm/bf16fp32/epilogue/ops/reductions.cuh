@@ -13,8 +13,8 @@ using namespace kittens;
 // Axis: a per-row vector (col_vec) anchors on the gl's LAST axis, so `partials` is shaped
 // [1, 1, N/REG_BLOCK_N, M] -- the column-group index on axis 2, the row (M) on the last axis --
 // and the col_vec stores along M. (Shaping it [1,1,M,N/REG_BLOCK_N] would reduce the wrong axis.)
-template<typename G, typename Accum>
-__device__ inline void partial_row_sum_sq(const G& g, const Accum& C, int row,int col,int wr,int wc){
+template<typename Globals, typename Accum>
+__device__ inline void partial_row_sum_sq(const Globals& g, const Accum& C, int row,int col,int wr,int wc){
     using Tile = std::remove_all_extents_t<Accum>;
     using CV   = typename Tile::col_vec;        // one value per row
     Tile sq; CV p0, p1;

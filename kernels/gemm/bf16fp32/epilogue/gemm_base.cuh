@@ -5,8 +5,8 @@
 
 // Identity epilogue (store only) -- gemm_kernel's DEFAULT Epilogue (the template default below).
 struct NoOpEpilogue {
-    template<typename G, typename Accum>
-    static __device__ inline void apply(const G& g, Accum& C, int row,int col,int wr,int wc){
+    template<typename Globals, typename Accum>
+    static __device__ inline void apply(const Globals& g, Accum& C, int row,int col,int wr,int wc){
         store_C(g, C, row, col, wr, wc);
     }
 };

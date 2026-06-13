@@ -10,8 +10,8 @@ __device__ inline subtile_coords block_coords(int row,int col,int wr,int wc){
              {col*SUBTILES_PER_DIM*WARPS_N+wc,   col*SUBTILES_PER_DIM*WARPS_N+WARPS_N+wc} };
 }
 // the four default full-tile stores; reused by every dim-preserving epilogue
-template<typename G, typename Accum>
-__device__ inline void store_C(const G& g, const Accum& C, int row,int col,int wr,int wc){
+template<typename Globals, typename Accum>
+__device__ inline void store_C(const Globals& g, const Accum& C, int row,int col,int wr,int wc){
     subtile_coords co = block_coords(row,col,wr,wc);
     store(g.c, C[0][0], {0,0,co.m[0],co.n[0]});
     store(g.c, C[0][1], {0,0,co.m[0],co.n[1]});

@@ -10,8 +10,8 @@ struct ResidualAddGlobals {
     hipStream_t stream;
 };
 struct ResidualAddEpilogue {
-    template<typename G, typename Accum>
-    static __device__ inline void apply(const G& g, Accum& C, int row,int col,int wr,int wc){
+    template<typename Globals, typename Accum>
+    static __device__ inline void apply(const Globals& g, Accum& C, int row,int col,int wr,int wc){
         residual_add(g, C, row,col,wr,wc);   // load residual tile, add into the accumulator
         store_C(g, C, row,col,wr,wc);
     }
