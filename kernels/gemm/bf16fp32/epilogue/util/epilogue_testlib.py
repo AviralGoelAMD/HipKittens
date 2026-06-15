@@ -84,6 +84,12 @@ EPILOGUES = {
         "label":    lambda args: "silu",
         "hbm_passes": 2,
     },
+    "swiglu": {  # SwiGLU (dim-reducing):  out = silu(gate) * value,  [M, 2*d_ff] -> [M, d_ff]
+        "module": "tk_swiglu",
+        "out_shape": lambda m, n, k: (m, n // 2),   # n = 2*d_ff GEMM width -> d_ff output
+        "weight_perm": True,                        # hk/bench permute the gate_up weight columns
+        "hbm_passes": 2,
+    },
     # Example of a future epilogue entry:
     # "rmsnorm": {
     #     "module": "tk_rmsnorm",

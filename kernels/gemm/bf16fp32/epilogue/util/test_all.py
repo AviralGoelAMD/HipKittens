@@ -58,6 +58,8 @@ def test_base_gemm(noop):
 def test_registry(noop):
     ok = True
     for name, spec in EPILOGUES.items():
+        if "ref" not in spec:          # dim-changing / multi-output kernels have dedicated tests
+            continue
         fk = importlib.import_module(spec["module"])
         for (m, n, k) in SHAPES:
             A, Bt = make_inputs(m, n, k)
@@ -78,6 +80,23 @@ def test_registry(noop):
                 e = (O.float() - ref.float()).abs().max().item()
                 ok &= _p(f"{name} {spec['label'](args)} {(m,n,k)}",
                          torch.allclose(O.float(), ref.float(), rtol=RTOL, atol=ATOL), f"max_err={e:.3g}")
+    return ok
+
+def test_swiglu():
+    import swiglu as sg
+    ok = True
+    for (m, d_ff, k) in [(256,128,256),(512,256,256),(256,512,128),(768,512,256),(2048,1024,512)]:
+        X = init_randn((m, k))
+        W = init_randn((k, 2*d_ff))
+        out = sg.make_swiglu(W)(X)
+        ref = sg.swiglu_ref(X, W)
+        e = (out.float() - ref).abs().max().item()
+        ok &= _p(f"swiglu {(m,d_ff,k)}", torch.allclose(out.float(), ref, rtol=RTOL, atol=ATOL), f"max_err={e:.3g}")
+    X = init_randn((256, 256)); W = init_randn((256, 2*256))
+    out = sg.make_swiglu(W)(X).float()
+    Hh = X.float() @ W.float()
+    inv = torch.nn.functional.silu(Hh[:, :256]) * Hh[:, 256:]
+    ok &= _p("invariant swiglu==silu(gate)*value", torch.allclose(out, inv, rtol=2e-2, atol=1e-1))
     return ok
 
 
@@ -222,6 +241,7 @@ def main():
     suite = [
         ("[base GEMM]",           test_base_gemm,        (noop,)),
         ("[registry epilogues]",  test_registry,         (noop,)),
+        ("[swiglu]",              test_swiglu,           ()),
         ("[partialrms]",          test_partialrms,       (noop, prms)),
         ("[residual_rms]",        test_residual_rms,     (rr,)),
         ("[residual_rms -> aux]", test_residual_rms_aux, (rr, aux)),
