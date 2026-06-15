@@ -72,7 +72,7 @@ A new epilogue is **one composition header** in `epilogues/` + **one glue file**
 - **HIP errors:** every HIP call in `launch` is wrapped in HK's `CHECK_CUDA_ERROR`
   (`pyutils/util.cuh`), which reports `file:line` + the HIP error string.
 - **Layout:** the tile↔global coordinate fan-out is a single helper, `block_coords` in
-  `ops/base.cuh`; `store_C` / `residual_add` / `save_tile` all derive from it.
+  `ops/base.cuh`; every store/load/reduce op in `ops/` derives from it.
 
 ## Testing
 

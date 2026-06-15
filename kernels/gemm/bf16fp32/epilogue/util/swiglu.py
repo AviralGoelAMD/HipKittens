@@ -1,6 +1,6 @@
 """swiglu.py - SwiGLU helpers: the Path A gate_up column permutation, a load-once wrapper, and the
 torch reference (natural layout). The permutation makes gate[j]/value[j] register-co-resident; it is
-applied ONCE to the static weight (never the runtime activation). See LAYOUT_NOTES s3-4."""
+applied ONCE to the static weight (never the runtime activation)."""
 import torch
 import tk_swiglu
 

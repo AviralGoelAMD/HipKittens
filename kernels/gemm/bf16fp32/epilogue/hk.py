@@ -69,6 +69,9 @@ def run(name, A, B, *extra, b_transposed=False):
     except KeyError:
         raise ValueError(f"unknown epilogue '{name}'; available: {available()}")
     mod = importlib.import_module(spec["module"])
+    if spec.get("weight_perm") and b_transposed:
+        raise ValueError(f"'{name}' needs the gate_up column permutation; pass b_transposed=False "
+                         f"or use make_swiglu -- hk.transpose only transposes, it does not permute.")
     if spec.get("weight_perm") and not b_transposed:
         # dim-changing epilogues (swiglu) need the gate_up weight's columns permuted once so
         # gate[j]/value[j] land register-co-resident. b_transposed callers must pre-permute.

@@ -1,5 +1,6 @@
 #include "aux_reduce.cuh"
 #include "pyutils/pyutils.cuh"
+#include "pyutils/util.cuh"
 #include <stdexcept>
 
 // tk_aux_rms.reduce(partials, r) -> writes per-row 1/rms into r.
@@ -17,6 +18,7 @@ void dispatch(aux_globals g) {
         throw std::runtime_error("aux_rms.reduce: partials must have at least one group (partials.rows() >= 1).");
     constexpr int TPB = 256;
     rms_reduce<<<(M + TPB - 1) / TPB, TPB, 0, g.stream>>>(g.partials, g.r);
+    CHECK_CUDA_ERROR(hipGetLastError());
 }
 PYBIND11_MODULE(TK_MODULE_NAME, m) {
     m.doc() = "tk aux RMS reduce: per-(group,row) partials -> per-row 1/rms";

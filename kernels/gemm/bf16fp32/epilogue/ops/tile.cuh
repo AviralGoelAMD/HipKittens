@@ -3,7 +3,7 @@
 #include "base.cuh"    // block_coords, subtile_coords
 using namespace kittens;
 
-// Tile (rank-2) epilogue ops on the col_l accumulator. Coordinates come from block_coords (the
+// Tile epilogue ops on the col_l accumulator. Coordinates come from block_coords (the
 // single tile->global mapping), so a loaded/stored tile lines up element-for-element with each
 // accumulator sub-tile.
 

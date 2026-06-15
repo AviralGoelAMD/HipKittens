@@ -4,9 +4,9 @@
 #include "reductions.cuh"  // partial_row_sum_sq
 #include "vec.cuh"         // apply_gamma
 
-// Residual + RMS-partials GEMM: h1 = A@B + residual; save h1 (for the second GEMM); emit
-// Sigma(h1^2) partials (for the aux 1/rms); apply gamma; store h1*gamma. The aux kernel turns
-// partials -> r = 1/rms; the RMSNorm-scale GEMM then reads `save`.
+// Residual + RMS-partials GEMM: h1 = A@B + residual; save h1 (for the BACKWARD pass); emit
+// Sigma(h1^2) partials (for the aux 1/rms); store c = h1*gamma. The aux kernel turns partials
+// -> r = 1/rms; the RMSNorm-scale GEMM reads c (gamma already folded in), post-applying r.
 struct ResidualRMSPartialsGlobals {
     _gl_A a; _gl_B b; _gl_C c;
     gl<bf16,-1,-1,-1,-1>  residual;   // [1,1,M,N] skip connection

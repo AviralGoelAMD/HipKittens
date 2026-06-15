@@ -44,3 +44,19 @@ def rope_ref(D, cos_sin):
     O[:, 0::2] = x * cos + y * sin
     O[:, 1::2] = -x * sin + y * cos
     return O
+
+def make_rope(W):
+    """Prepare a RoPE'd Q/K projection once: permute the (static) weight columns by rope_perm and
+    transpose for the kernel. Returns forward(X, cos_sin) -> RoPE(X@W), owning BOTH permutations
+    (the weight columns AND cos_sin) so callers pass natural W + cos_sin. Rebuild if W changes."""
+    import tk_rope
+    perm = rope_perm(W.shape[1])
+    Wt = W[:, perm].to(device="cuda", dtype=DTYPE).t().contiguous()   # [N, d_model]: permuted + transposed
+
+    def forward(X, cos_sin):                                          # cos_sin natural [M, N]
+        X = X.to(device="cuda", dtype=DTYPE).contiguous()
+        csp = cos_sin[:, perm].to(device="cuda", dtype=DTYPE).contiguous()   # same perm as the weight
+        O = torch.empty(X.shape[0], W.shape[1], dtype=DTYPE, device="cuda")
+        tk_rope.dispatch(X, Wt, O, csp)
+        return O
+    return forward

@@ -4,7 +4,8 @@
 using namespace kittens;
 
 // SwiGLU (dim-reducing):  out = silu(gate) * value, where gate = C[*][0], value = C[*][1]
-// (made register-co-resident by the one-time gate_up weight permutation; LAYOUT_NOTES s2-3).
+// (made register-co-resident by the one-time gate_up weight permutation: the pair lands 128 cols
+// apart in a single lane -> silu(gate)*value is register-local).
 // Reuses gemm_args_base (no extra inputs); output c is [M, d_ff], b is the [2*d_ff, K] weight.
 struct SwigluEpilogue {
     template<typename Globals, typename Accum>

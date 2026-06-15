@@ -306,6 +306,8 @@ void launch(Globals g) {
         throw std::runtime_error("GEMM: M and N must be multiples of BLOCK_SIZE (256)");
     if (K % K_ALIGN)
         throw std::runtime_error("GEMM: K must be a multiple of 128");
+    if (g.c.rows() != M || g.b.rows() != N || g.b.cols() != K)
+        throw std::runtime_error("GEMM: operand shape mismatch (need a=[M,K], b=[N,K], c=[M,N])");
     const size_t mem = MAX_SHARED_MEMORY;
     CHECK_CUDA_ERROR(hipFuncSetAttribute((void*)gemm_kernel<Epilogue, Globals>, hipFuncAttributeMaxDynamicSharedMemorySize, mem));
     gemm_kernel<Epilogue, Globals><<<dim3((N / BLOCK_SIZE) * (M / BLOCK_SIZE)), dim3(NUM_THREADS), mem, g.stream>>>(g, M, N, K);
@@ -324,6 +326,8 @@ void launch_swiglu(Globals g) {
         throw std::runtime_error("SwiGLU: K must be a multiple of 128");
     if (N != 2 * N_out)
         throw std::runtime_error("SwiGLU: b.rows() must equal 2*c.cols() (2*d_ff vs d_ff)");
+    if (g.c.rows() != M || g.b.cols() != K)
+        throw std::runtime_error("SwiGLU: operand shape mismatch (need a=[M,K], b=[2*d_ff,K], c=[M,d_ff])");
     const size_t mem = MAX_SHARED_MEMORY;
     CHECK_CUDA_ERROR(hipFuncSetAttribute((void*)gemm_kernel<Epilogue, Globals>, hipFuncAttributeMaxDynamicSharedMemorySize, mem));
     gemm_kernel<Epilogue, Globals><<<dim3((N / BLOCK_SIZE) * (M / BLOCK_SIZE)), dim3(NUM_THREADS), mem, g.stream>>>(g, M, N, K);

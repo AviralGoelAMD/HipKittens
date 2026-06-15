@@ -29,6 +29,6 @@ __device__ inline void apply_rope(const Globals& g, Accum& C, int row,int col,in
         mul(tmp,    C[r][1], cos_t);     // tmp = y*cos
         mul(C[r][1], C[r][0], sin_t);    // C[r][1] = x*sin
         sub(C[r][1], tmp, C[r][1]);      // C[r][1] = y*cos - x*sin = O_odd
-        mul(C[r][0], oe, 1.0f);          // C[r][0] = O_even
+        copy(C[r][0], oe);               // C[r][0] = O_even
     }
 }

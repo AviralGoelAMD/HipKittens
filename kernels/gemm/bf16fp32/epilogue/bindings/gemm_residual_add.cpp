@@ -2,7 +2,11 @@
 #include "residual_add.cuh"
 #include "pyutils/pyutils.cuh"
 
-void dispatch(ResidualAddGlobals g) { launch<ResidualAddEpilogue, ResidualAddGlobals>(g); }
+void dispatch(ResidualAddGlobals g) {
+    if (g.residual.rows() != g.c.rows() || g.residual.cols() != g.c.cols())
+        throw std::runtime_error("residual_add: residual must be [M,N] matching c");
+    launch<ResidualAddEpilogue, ResidualAddGlobals>(g);
+}
 PYBIND11_MODULE(TK_MODULE_NAME, m) {
     m.doc() = "tk residual-add epilogue";
     py::bind_function<dispatch>(m, "dispatch",
