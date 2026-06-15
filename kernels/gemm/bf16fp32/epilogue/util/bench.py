@@ -109,23 +109,50 @@ def run_chain(iters, warm):
         rows.append(row)
     return rows
 
+def run_swiglu(iters, warm, shapes=None):
+    """SwiGLU fusion proof: fused kernel vs HK noop GEMM [M,2*d_ff] + a torch silu(gate)*value.
+    Both pay the same 2*d_ff GEMM, so this isolates the activation fusion + half-width store."""
+    import tk_noop
+    from swiglu import make_swiglu, swiglu_ref
+    shapes = shapes or [(2048, 1024, 512), (4096, 4096, 4096), (8192, 4096, 4096)]   # (M, d_ff, K)
+    rows = []
+    for (m, d_ff, k) in shapes:
+        X = init_randn((m, k)); W = init_randn((k, 2 * d_ff))
+        fwd = make_swiglu(W)
+        Wt_nat = W.to(device="cuda", dtype=DTYPE).t().contiguous()   # natural weight for the noop GEMM
+        D = init_empty((m, 2 * d_ff))
+        def fused(i):  fwd(X)
+        def unfused(i):
+            tk_noop.dispatch(X, Wt_nat, D)
+            torch.nn.functional.silu(D[:, :d_ff]) * D[:, d_ff:]
+        ok = torch.allclose(fwd(X).float(), swiglu_ref(X, W), rtol=RTOL, atol=ATOL)
+        tf, tu = _bench(fused, iters, warm), _bench(unfused, iters, warm)
+        saved = 2 * m * d_ff * DSIZE                 # the d_ff intermediate round-trip fusion skips
+        rows.append({"shape": [m, d_ff, k], "fused_ms": round(tf, 4), "torch_ms": round(tu, 4),
+                     "speedup": round(tu / tf, 3), "saved_MB": round(saved / 1e6, 1), "ok": bool(ok)})
+    return rows
+
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--kernels", default=",".join(k for k in EPILOGUES if k != "noop"))
+    ap.add_argument("--kernels", default=",".join(k for k in EPILOGUES if k != "noop" and "ref" in EPILOGUES[k]))
     ap.add_argument("--iters", type=int, default=50)
     ap.add_argument("--warm", type=int, default=10)
     ap.add_argument("--no-chain", action="store_true")
     ap.add_argument("--json", default=None)
     a = ap.parse_args()
 
-    out = {"epilogues": [], "chain": []}
+    out = {"epilogues": [], "swiglu": [], "chain": []}
     print(f"{'kernel':<16}{'shape':<22}{'fused ms':>10}{'torch ms':>10}{'speedup':>9}{'saved MB':>10}{'ok':>4}")
     for kern in a.kernels.split(","):
         for r in run_epilogue(kern, a.iters, a.warm):
             out["epilogues"].append(r)
             print(f"{r['kernel']:<16}{str(tuple(r['shape'])):<22}{r['fused_ms']:>10}{r['torch_ms']:>10}"
                   f"{r['speedup']:>9}{r['saved_MB']:>10}{'Y' if r['correct'] else 'N':>4}")
+    print(f"\n{'swiglu (M,d_ff,K)':<24}{'fused ms':>10}{'torch ms':>10}{'speedup':>9}{'saved MB':>10}{'ok':>4}")
+    for r in run_swiglu(a.iters, a.warm):
+        out["swiglu"].append(r)
+        print(f"{str(tuple(r['shape'])):<24}{r['fused_ms']:>10}{r['torch_ms']:>10}{r['speedup']:>9}{r['saved_MB']:>10}{'Y' if r['ok'] else 'N':>4}")
     if not a.no_chain:
         print(f"\n{'chain (M,K0,N,P)':<24}{'hk ms':>10}{'torch ms':>10}{'triton ms':>12}")
         for r in run_chain(a.iters, a.warm):
