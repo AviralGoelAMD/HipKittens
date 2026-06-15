@@ -17,6 +17,7 @@ import torch
 from epilogue_testlib import (EPILOGUES, make_inputs, gemm_base, gemm_reference,
                               init_empty, init_randn, assert_sane, _f32, RTOL, ATOL, DTYPE)
 from block_chain import fused_rmsnorm_block, EPS, REG_BLOCK_N
+from rope import rope_perm, make_cos_sin, rope_ref
 
 torch.manual_seed(0)
 SQ_RTOL, SQ_ATOL = 2e-2, 1.0                 # partials are an fp32 sum over K -> looser than bf16 out
@@ -25,6 +26,7 @@ SHAPES      = [(256,256,256), (256,512,128), (512,256,256), (768,768,256), (2048
 GEMM_SHAPES = SHAPES + [(2048,2048,2048), (8192,8192,8192)]
 CHAIN_SHAPES = [(256,256,256,256), (512,512,512,512), (512,1024,512,768), (768,256,768,512)]  # (M,K0,N,P)
 CHAIN_REL = 2e-2                             # normwise ||out-ref||/||ref|| (robust for the two-GEMM chain)
+ROPE_SHAPES = [(256,256,256), (512,512,128), (768,256,256), (1024,512,384), (2048,1024,512), (4096,2048,512), (8192,4096,512)]  # (M,N,K); N%256, K%128
 
 
 def _p(tag, ok, detail=""):
@@ -232,6 +234,31 @@ def test_invariants(noop, scale_m, rms_m, resadd_m, silu_m):
     return ok
 
 
+def test_rope(rope_m):
+    """gemm_rope, interleaved: permute B + cos_sin with rope_perm, rotate register-local, store
+    permuted. Validate against the permuted reference rope(A@B, cos_sin)[:, perm]."""
+    ok = True
+    for (m, n, k) in ROPE_SHAPES:
+        A, Bt = make_inputs(m, n, k)
+        perm = rope_perm(n).to(A.device)
+        D = gemm_reference(A, Bt)                                   # fp32 A@B [m,n]
+        cs = make_cos_sin(m, n)                                     # natural interleaved [cos,sin]
+        Bp = Bt[perm].contiguous(); csp = cs[:, perm].to(DTYPE).contiguous()   # held past async launch
+        O = init_empty((m, n))
+        rope_m.dispatch(A, Bp, O, csp); torch.cuda.synchronize()
+        fin = bool(torch.isfinite(O).all())
+        ref = rope_ref(D, cs.to(DTYPE))[:, perm]   # bf16 cos_sin to match the kernel's bf16 cos_sin input
+        e = (O.float() - ref).abs().max().item()
+        ok &= _p(f"rope {(m,n,k)}", fin and torch.allclose(O.float(), ref, rtol=RTOL, atol=ATOL),
+                 f"max_err={e:.3g}" + ("" if fin else " NON-FINITE"))
+        # identity: cos=1, sin=0 -> rotation is a no-op, output == D permuted (validates the plumbing)
+        cs1 = torch.zeros(m, n, device="cuda"); cs1[:, 0::2] = 1.0
+        csp1 = cs1[:, perm].to(DTYPE).contiguous(); Oi = init_empty((m, n))
+        rope_m.dispatch(A, Bp, Oi, csp1); torch.cuda.synchronize()
+        ok &= _p(f"rope identity {(m,n,k)}", torch.allclose(Oi.float(), D[:, perm], rtol=RTOL, atol=ATOL))
+    return ok
+
+
 def main():
     noop     = importlib.import_module("tk_noop")
     scale_m  = importlib.import_module("tk_scale")
@@ -241,6 +268,7 @@ def main():
     prms     = importlib.import_module("tk_partialrms")
     rr       = importlib.import_module("tk_residual_rms")
     aux      = importlib.import_module("tk_aux_rms")
+    rope_m   = importlib.import_module("tk_rope")
 
     # (section label, test fn, args) -- run in order, AND the pass flags together
     suite = [
@@ -252,6 +280,7 @@ def main():
         ("[residual_rms -> aux]", test_residual_rms_aux, (rr, aux)),
         ("[aux_reduce]",          test_aux_reduce,       (aux,)),
         ("[chain]",               test_chain,            ()),
+        ("[rope]",                test_rope,             (rope_m,)),
         ("[invariants]",          test_invariants,       (noop, scale_m, rms_m, resadd_m, silu_m)),
     ]
     allpass = True
