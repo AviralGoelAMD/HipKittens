@@ -69,6 +69,12 @@ def run(name, A, B, *extra, b_transposed=False):
     except KeyError:
         raise ValueError(f"unknown epilogue '{name}'; available: {available()}")
     mod = importlib.import_module(spec["module"])
+    if spec.get("weight_perm") and not b_transposed:
+        # dim-changing epilogues (swiglu) need the gate_up weight's columns permuted once so
+        # gate[j]/value[j] land register-co-resident. b_transposed callers must pre-permute.
+        from swiglu import gate_up_perm
+        B = _coerce(B)                                    # [d_model, 2*d_ff]
+        B = B[:, gate_up_perm(B.shape[1] // 2).to(B.device)].contiguous()
     A, Bt, M, N, K = _prep(A, B, b_transposed)
     oh = spec.get("out_shape")
     out_rows, out_cols = oh(M, N, K) if oh else (M, N)
