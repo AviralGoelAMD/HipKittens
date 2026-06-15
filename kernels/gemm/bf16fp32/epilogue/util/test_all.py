@@ -77,9 +77,11 @@ def test_registry(noop):
                 torch.cuda.synchronize()
                 ref = init_empty((m, n))
                 spec["ref"](Cn, ref, *args)
+                fin = bool(torch.isfinite(O).all())
                 e = (O.float() - ref.float()).abs().max().item()
                 ok &= _p(f"{name} {spec['label'](args)} {(m,n,k)}",
-                         torch.allclose(O.float(), ref.float(), rtol=RTOL, atol=ATOL), f"max_err={e:.3g}")
+                         fin and torch.allclose(O.float(), ref.float(), rtol=RTOL, atol=ATOL),
+                         f"max_err={e:.3g}" + ("" if fin else " NON-FINITE"))
     return ok
 
 def test_swiglu():
@@ -89,9 +91,12 @@ def test_swiglu():
         X = init_randn((m, k))
         W = init_randn((k, 2*d_ff))
         out = sg.make_swiglu(W)(X)
-        ref = sg.swiglu_ref(X, W)
+        fin = bool(torch.isfinite(out).all())
+        ref = sg.swiglu_ref(X, W)   # fp32 oracle: kernel accumulates AND applies the epilogue in fp32
         e = (out.float() - ref).abs().max().item()
-        ok &= _p(f"swiglu {(m,d_ff,k)}", torch.allclose(out.float(), ref, rtol=RTOL, atol=ATOL), f"max_err={e:.3g}")
+        ok &= _p(f"swiglu {(m,d_ff,k)}",
+                 fin and torch.allclose(out.float(), ref, rtol=RTOL, atol=ATOL),
+                 f"max_err={e:.3g}" + ("" if fin else " NON-FINITE"))
     X = init_randn((256, 256)); W = init_randn((256, 2*256))
     out = sg.make_swiglu(W)(X).float()
     Hh = X.float() @ W.float()
@@ -149,7 +154,7 @@ def test_residual_rms_aux(rr, aux):
         aux.reduce(partials, r)
         torch.cuda.synchronize()
         ref = torch.rsqrt(h1.pow(2).mean(-1) + EPS)
-        ok &= _p(f"residual_rms->aux {(m,n,k)}", torch.allclose(r.float(), ref, rtol=SQ_RTOL, atol=1e-2))
+        ok &= _p(f"residual_rms->aux {(m,n,k)}", torch.allclose(r.float(), ref, rtol=SQ_RTOL, atol=1e-3))
     return ok
 
 
