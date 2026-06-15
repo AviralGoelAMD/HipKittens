@@ -10,6 +10,8 @@ using namespace kittens;
 // (The name is the vector's SHAPE, not what it scales -- a per-row value uses a col_vec.)
 // Coordinates come from block_coords so r[i]/gamma[j] line up with the rows/cols each register
 // sub-tile holds.
+// Load-coord forms differ by vector kind: col_vec loads a single last-axis index ({co.m[0]});
+// row_vec loads full coords ({0,0,0,co.n[0]}, N last). Both correct -- not a typo.
 
 // per-row 1/rms: r is gl[1,1,1,M] (M on the last axis); col_vec + mul_row.
 template<typename Globals, typename Accum>

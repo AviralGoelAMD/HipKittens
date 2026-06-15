@@ -6,7 +6,8 @@ new epilogue needs NO change to this file.
 
     out = hk.run("scale", A, B, 0.5)            # 0.5 * (A @ B)
     out = hk.run("rmsnorm_scale", A, B, r, gamma)
-    out = hk.run("residual", A, B, residual)
+    out = hk.run("residual_add", A, B, residual)
+    out = hk.run("swiglu", X, W_gate_up)        # dim-reducing: [M,2*d_ff] -> [M,d_ff]
     hk.available()                              # the epilogue names you can run
 
 Conveniences: B is passed normally (the wrapper transposes it for the kernel); scalars are plain
@@ -64,6 +65,7 @@ def run(name, A, B, *extra, b_transposed=False):
     (e.g. "scale" -> alpha; "rmsnorm_scale" -> r, gamma; "residual" -> residual). Returns the
     output tensor. b_transposed=True: B is already the kernel's transposed operand (pass a weight
     transposed once via hk.transpose(W)) -- skips the per-call weight copy on a hot path."""
+    # resolve the kernel module + its binding arg order from the registry
     try:
         spec = EPILOGUES[name]
     except KeyError:
@@ -75,13 +77,15 @@ def run(name, A, B, *extra, b_transposed=False):
     if spec.get("weight_perm") and not b_transposed:
         # dim-changing epilogues (swiglu) need the gate_up weight's columns permuted once so
         # gate[j]/value[j] land register-co-resident. b_transposed callers must pre-permute.
-        from swiglu import gate_up_perm
-        B = _coerce(B)                                    # [d_model, 2*d_ff]
-        B = B[:, gate_up_perm(B.shape[1] // 2).to(B.device)].contiguous()
+        B = _coerce(B)                                    # [d_model, weight width N]
+        B = B[:, spec["weight_perm"](B.shape[1]).to(B.device)].contiguous()
+    # coerce A and build the kernel's transposed B operand
     A, Bt, M, N, K = _prep(A, B, b_transposed)
+    # output shape (out_shape handles dim-changing epilogues; swiglu halves N)
     oh = spec.get("out_shape")
     out_rows, out_cols = oh(M, N, K) if oh else (M, N)
     C = torch.empty(out_rows, out_cols, dtype=DTYPE, device="cuda")
+    # launch the compiled epilogue kernel
     mod.dispatch(A, Bt, C, *[_coerce(x) for x in extra])
     torch.cuda.synchronize()
     return C

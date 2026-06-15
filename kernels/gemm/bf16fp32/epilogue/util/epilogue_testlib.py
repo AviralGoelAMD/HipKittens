@@ -17,8 +17,13 @@ Each entry:
   label(args)  : short string for test output.
   hbm_passes   : # of M*N D-transfers the unfused path pays and fusion skips (bench only;
                  2 = D write + D read for a single round-trip; more if the epilogue re-reads D).
+
+Dim-changing entries (e.g. swiglu) are PARTIAL: they carry only module/out_shape/weight_perm/
+hbm_passes (no args/ref/identity/sweep/label) and are tested via a dedicated function, not the
+generic loop -- generic consumers skip them via the `"ref" not in spec` convention.
 """
 import torch
+from swiglu import gate_up_perm   # registry carries the perm fn (swiglu entry); swiglu lazy-imports tk_swiglu
 
 DTYPE = torch.bfloat16
 DSIZE = 2          # bytes per bf16 element of the intermediate D
@@ -71,7 +76,7 @@ EPILOGUES = {
         "args":     lambda m, n, k: (init_randn((m, n)),),
         "ref":      lambda D, out, residual: out.copy_((D.float() + residual.float()).to(DTYPE)),
         "identity": lambda m, n, k: (torch.zeros((m, n), dtype=DTYPE, device="cuda"),),  # residual=0 -> == noop
-        "sweep":    lambda m, n, k: [(init_randn((m, n)),)],
+        "sweep":    lambda m, n, k: [(init_randn((m, n)),)],   # large-magnitude residual is not a viable bf16 test (range, not accumulate)
         "label":    lambda args: "resadd",
         "hbm_passes": 2,
     },
@@ -87,7 +92,7 @@ EPILOGUES = {
     "swiglu": {  # SwiGLU (dim-reducing):  out = silu(gate) * value,  [M, 2*d_ff] -> [M, d_ff]
         "module": "tk_swiglu",
         "out_shape": lambda m, n, k: (m, n // 2),   # n = 2*d_ff GEMM width -> d_ff output
-        "weight_perm": True,                        # hk/bench permute the gate_up weight columns
+        "weight_perm": lambda n: gate_up_perm(n // 2),  # permute the 2*d_ff weight columns (n = weight width)
         "hbm_passes": 2,
     },
     # Example of a future epilogue entry:

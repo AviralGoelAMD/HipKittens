@@ -2,9 +2,8 @@
 torch reference (natural layout). The permutation makes gate[j]/value[j] register-co-resident; it is
 applied ONCE to the static weight (never the runtime activation)."""
 import torch
-import tk_swiglu
 
-H, BT = 128, 256   # BlockTileN/2, BLOCK_SIZE  (must match epilogue_args.cuh)
+H, BT = 128, 256   # BlockTileN/2, BLOCK_SIZE; single source: epilogue_args.cuh
 DTYPE = torch.bfloat16
 
 
@@ -32,6 +31,7 @@ def swiglu_ref(X, W_gate_up):
 def make_swiglu(W_gate_up):
     """Prepare the SwiGLU projection once: permute the (static) weight's columns and transpose for
     the kernel. Returns forward(X) -> [M, d_ff]. Rebuild if W_gate_up changes (no auto-cache)."""
+    import tk_swiglu
     d_ff = W_gate_up.shape[1] // 2
     Wt = W_gate_up[:, gate_up_perm(d_ff)].to(device="cuda", dtype=DTYPE).t().contiguous()  # [2*d_ff, d_model]
 

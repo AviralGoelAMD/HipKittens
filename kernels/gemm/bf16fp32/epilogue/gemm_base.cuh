@@ -14,6 +14,9 @@ struct NoOpEpilogue {
 // The epilogue contract (a static apply with the right signature) is enforced by a static_assert
 // inside gemm_kernel, where the accumulator type is in scope.
 
+// Mainloop below is a verbatim, templatized COPY of the base GEMM (256_256_64_32_with16x32.cpp):
+// additive, not invasive. Do NOT hand-edit the schedule -- re-sync from the base GEMM if it changes.
+// Only Epilogue::apply (the single call just before the function's end) is new.
 template<typename Epilogue = NoOpEpilogue, typename Globals = gemm_args_base>
 __global__ __launch_bounds__(NUM_THREADS, 2)
 void gemm_kernel(const Globals g, int M, int N, int K) {

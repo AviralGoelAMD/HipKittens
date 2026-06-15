@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # build.sh - clean-build the base GEMM (tk_kernel) + named fused epilogue variants.
 #
-# Removes stale .so first (the Makefile depends only on the .cpp, NOT the .cuh headers,
-# so it will NOT rebuild on a header edit -> stale .so silently masks fixes),
-# and copies the base tk_kernel .so next to the bench/test scripts (the unfused path needs it).
+# The epilogue Makefile does header-aware incremental rebuilds (-MMD/.d tracks .cuh deps), so only
+# what changed recompiles. The base GEMM Makefile (bf16fp32/) does NOT track headers, so the base
+# tk_kernel .so is force-removed to guarantee a fresh build, then copied next to the bench/test
+# scripts (the unfused path needs it). (Switching GPU_TARGET isn't dep-tracked -> `make clean` first.)
 #
 # Kernel names are the SHORT registry/module names (noop, scale, rmsnorm_scale, ...); the matching
 # bindings/gemm_<name>*.cpp is found by glob, and the module is named tk_<name>.
@@ -49,7 +50,6 @@ for k in $kernels; do
   kfile=$(basename "$src" .cpp); kfile="${kfile#gemm_}"   # e.g. gemm_rmsnorm_scale.cpp -> rmsnorm_scale
   mod="tk_$k"
   echo "== $mod  (bindings/gemm_$kfile.cpp) =="
-  rm -f "$mod"*.so
   make KERNEL="$kfile" MODULE="$mod" GPU_TARGET="$GPU_TARGET"
 done
 

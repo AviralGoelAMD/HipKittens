@@ -20,8 +20,7 @@ __global__ void rms_reduce(const gl<float,-1,-1,-1,-1> partials, gl<bf16,-1,-1,-
     if (row >= M) return;
     int groups = partials.rows();        // = N / REG_BLOCK_N
     int N = groups * REG_BLOCK_N;        // full feature dim (REG_BLOCK_N cols folded into each group)
-    int stride = partials.cols();        // = M  (partials laid out [groups, M] row-major)
     float s = 0.f;
-    for (int g = 0; g < groups; ++g) s += partials.raw_ptr[g * stride + row];
+    for (int g = 0; g < groups; ++g) s += partials[{0, 0, g, row}];   // stride-aware: no contiguity assumption
     r.raw_ptr[row] = (bf16)(rsqrtf(s / (float)N + RMS_EPS));
 }

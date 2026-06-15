@@ -11,7 +11,6 @@ constexpr int REG_BLOCK_M      = BLOCK_SIZE / WARPS_M;
 constexpr int REG_BLOCK_N      = BLOCK_SIZE / WARPS_N;
 constexpr int HALF_REG_BLOCK_M = REG_BLOCK_M / 2;
 constexpr int HALF_REG_BLOCK_N = REG_BLOCK_N / 2;
-constexpr int DOT_SLICE        = 32;
 constexpr int   SUBTILES_PER_DIM = 2;     // accumulator fans out to SUBTILES_PER_DIM^2 sub-tiles (C_accum[2][2])
 constexpr float RMS_EPS          = 1e-5f; // RMSNorm epsilon: r = rsqrt(mean(x^2) + RMS_EPS)
 
@@ -22,6 +21,7 @@ static_assert(REG_BLOCK_M * WARPS_M == BLOCK_SIZE, "REG_BLOCK_M * WARPS_M must e
 static_assert(REG_BLOCK_N * WARPS_N == BLOCK_SIZE, "REG_BLOCK_N * WARPS_N must equal BLOCK_SIZE");
 static_assert(REG_BLOCK_M % SUBTILES_PER_DIM == 0, "REG_BLOCK_M must split into SUBTILES_PER_DIM row sub-tiles");
 static_assert(REG_BLOCK_N % SUBTILES_PER_DIM == 0, "REG_BLOCK_N must split into SUBTILES_PER_DIM col sub-tiles");
+static_assert(SUBTILES_PER_DIM == 2, "accumulator [2][2] + the explicit C[0][0]..C[1][1] stores/loads hardcode a 2x2 fan-out");
 
 #define NUM_WARPS (WARPS_M * WARPS_N)
 #define NUM_THREADS (kittens::WARP_THREADS * NUM_WARPS)

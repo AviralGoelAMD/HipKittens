@@ -21,8 +21,8 @@ import torch
 import tk_residual_rms, tk_aux_rms, tk_rmsnorm_scale
 
 DTYPE = torch.bfloat16
-EPS = 1e-5   # matches the aux kernel's rsqrt(.. + eps) and layer_norm.py
-REG_BLOCK_N = 64   # per-warp-column group width; mirrors REG_BLOCK_N in epilogue_args.cuh (RMS partials group count = N // REG_BLOCK_N)
+EPS = 1e-5   # single source: RMS_EPS in epilogue_args.cuh (the aux kernel's rsqrt(.. + eps)) -- keep in sync
+REG_BLOCK_N = 64   # single source: REG_BLOCK_N in epilogue_args.cuh (partials group count = N // REG_BLOCK_N; backstopped by the binding group-count check)
 
 
 def make_fused_rmsnorm_block(W0, W1):

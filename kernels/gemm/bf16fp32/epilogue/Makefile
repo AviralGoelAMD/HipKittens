@@ -6,7 +6,6 @@ SRC        := bindings/gemm_$(KERNEL).cpp
 DEPFILE    := $(MODULE).d
 
 # HIP variables
-ROCM_INSTALL_DIR := $(ROCM_PATH)
 HIP_INCLUDE_DIR  := /opt/rocm/include/hip
 
 HIPCXX ?= /opt/rocm/bin/hipcc
@@ -27,7 +26,6 @@ ICPPFLAGS := -I. -Iops -Iepilogues -I${THUNDERKITTENS_ROOT}/include -I$(HIP_INCL
 ILDFLAGS  :=
 ILDLIBS   :=
 
-CXXFLAGS ?= -Wall -Wextra
 CXXFLAGS := -w
 
 ICXXFLAGS += $(CXXFLAGS) 

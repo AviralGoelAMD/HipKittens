@@ -8,20 +8,21 @@ Q*K^T is invariant to a shared feature permutation of Q and K (V stays natural).
 import torch
 from epilogue_testlib import DTYPE
 
-HALF_BLOCK = 128      # co-residency stride (BlockTileN/2)
-BLOCK = 256           # BLOCK_SIZE
+HALF_BLOCK = 128      # co-residency stride (BlockTileN/2); single source: epilogue_args.cuh
+BLOCK = 256           # BLOCK_SIZE; single source: epilogue_args.cuh
 
 
 def rope_perm(N, H=HALF_BLOCK, BT=BLOCK):
     """perm[new_col] = old_col: pair k's even member (old col 2k) -> block-col (k%H); its odd member
     (old col 2k+1) -> block-col (k%H + H), same 256-block. Bijection of [0,N); requires N % 256 == 0."""
     assert N % BT == 0, f"rope_perm: N={N} must be a multiple of {BT}"
-    perm = [0] * N
-    for k in range(N // 2):
-        b, c = k // H, k % H
-        perm[b * BT + c] = 2 * k             # even (cos) slot
-        perm[b * BT + c + H] = 2 * k + 1     # odd  (sin) slot
-    return torch.tensor(perm, dtype=torch.long)
+    k = torch.arange(N // 2)
+    b, c = k // H, k % H
+    even_slot, odd_slot = b * BT + c, b * BT + c + H   # even (cos) / odd (sin) block-cols
+    perm = torch.empty(N, dtype=torch.long)
+    perm[even_slot] = 2 * k
+    perm[odd_slot] = 2 * k + 1
+    return perm
 
 
 def make_cos_sin(M, N, base=10000.0, device="cuda"):
@@ -37,7 +38,7 @@ def make_cos_sin(M, N, base=10000.0, device="cuda"):
 
 def rope_ref(D, cos_sin):
     """Interleaved RoPE reference (fp32): O[2k]=x*cos+y*sin, O[2k+1]=-x*sin+y*cos (CODA gemm_rope)."""
-    D = D.float(); cos_sin = cos_sin.float()
+    D = D.float(); cos_sin = cos_sin.to(DTYPE).float()   # mirror the kernel's bf16 cos_sin load (faithful regardless of caller)
     x, y = D[:, 0::2], D[:, 1::2]
     cos, sin = cos_sin[:, 0::2], cos_sin[:, 1::2]
     O = torch.empty_like(D)

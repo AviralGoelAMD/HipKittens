@@ -6,6 +6,7 @@ Covers (each case prints a PASS/FAIL line, so coverage is visible, not just a fi
   - every registry epilogue: identity (bit-exact vs noop) + parameter sweep (vs ref(noop_baseline)),
   - the multi-output kernels: partialrms, residual_rms, residual_rms -> aux,
   - the fused residual_rms -> aux -> rmsnorm_scale chain,
+  - the dim-reducing SwiGLU kernel (silu(gate)*value) and the RoPE epilogue (interleaved rotation),
   - math invariants: scale linearity, residual additivity, SiLU identity, RMSNorm unit-RMS rows.
 
 Deterministic (seeded). Run from the epilogue dir after building the kernels:
@@ -22,7 +23,8 @@ from rope import rope_perm, make_cos_sin, rope_ref
 torch.manual_seed(0)
 SQ_RTOL, SQ_ATOL = 2e-2, 1.0                 # partials are an fp32 sum over K -> looser than bf16 out
 # small / single-block (incl. the K%128 edge 256x512x128), non-square, and larger shapes
-SHAPES      = [(256,256,256), (256,512,128), (512,256,256), (768,768,256), (2048,1024,512), (512,1024,1024)]
+SHAPES      = [(256,256,256), (256,512,128), (512,256,256), (768,768,256), (2048,1024,512), (512,1024,1024),
+               (4096,4096,4096), (4096,11008,4096), (4096,4096,11008)]  # + Llama-7B: attn proj, FFN gate/up, FFN down
 GEMM_SHAPES = SHAPES + [(2048,2048,2048), (8192,8192,8192)]
 CHAIN_SHAPES = [(256,256,256,256), (512,512,512,512), (512,1024,512,768), (768,256,768,512)]  # (M,K0,N,P)
 CHAIN_REL = 2e-2                             # normwise ||out-ref||/||ref|| (robust for the two-GEMM chain)
@@ -84,6 +86,19 @@ def test_registry(noop):
                 ok &= _p(f"{name} {spec['label'](args)} {(m,n,k)}",
                          fin and torch.allclose(O.float(), ref.float(), rtol=RTOL, atol=ATOL),
                          f"max_err={e:.3g}" + ("" if fin else " NON-FINITE"))
+    # large-shape coverage for residual_add (the deferred (8192,8192,4096) correctness concern)
+    fk = importlib.import_module("tk_residual_add"); spec = EPILOGUES["residual_add"]
+    for (m, n, k) in [(8192, 8192, 4096)]:
+        A, Bt = make_inputs(m, n, k)
+        Cn = gemm_base(noop, A, Bt, m, n)
+        args = spec["sweep"](m, n, k)[0]
+        O = init_empty((m, n)); fk.dispatch(A, Bt, O, *args); torch.cuda.synchronize()
+        ref = init_empty((m, n)); spec["ref"](Cn, ref, *args)
+        fin = bool(torch.isfinite(O).all())
+        e = (O.float() - ref.float()).abs().max().item()
+        ok &= _p(f"residual_add large {(m,n,k)}",
+                 fin and torch.allclose(O.float(), ref.float(), rtol=RTOL, atol=ATOL),
+                 f"max_err={e:.3g}" + ("" if fin else " NON-FINITE"))
     return ok
 
 def test_swiglu():
@@ -103,7 +118,7 @@ def test_swiglu():
     out = sg.make_swiglu(W)(X).float()
     Hh = X.float() @ W.float()
     inv = torch.nn.functional.silu(Hh[:, :256]) * Hh[:, 256:]
-    ok &= _p("invariant swiglu==silu(gate)*value", torch.allclose(out, inv, rtol=2e-2, atol=1e-1))
+    ok &= _p("invariant swiglu==silu(gate)*value", torch.allclose(out, inv, rtol=2e-2, atol=1e-1))  # fp32-recomputed invariant -> looser than bf16 RTOL/ATOL
     return ok
 
 
@@ -208,20 +223,20 @@ def test_invariants(noop, scale_m, rms_m, resadd_m, silu_m):
     O2 = init_empty((m, n))
     scale_m.dispatch(A, Bt, O2, _f32(2.0))
     torch.cuda.synchronize()
-    ok &= _p("invariant scale linearity", torch.allclose(O2.float(), 2 * O1.float(), rtol=2e-2, atol=1e-1))
+    ok &= _p("invariant scale linearity", torch.allclose(O2.float(), 2 * O1.float(), rtol=2e-2, atol=1e-1))  # fp32-recomputed invariant -> looser than bf16 RTOL/ATOL
 
     # residual add is additive: out == D + residual
     res = init_randn((m, n))
     Or = init_empty((m, n))
     resadd_m.dispatch(A, Bt, Or, res)
     torch.cuda.synchronize()
-    ok &= _p("invariant residual additivity", torch.allclose(Or.float(), D + res.float(), rtol=2e-2, atol=2e-1))
+    ok &= _p("invariant residual additivity", torch.allclose(Or.float(), D + res.float(), rtol=2e-2, atol=2e-1))  # additive at magnitude -> atol 2e-1 (fp32 recompute)
 
     # silu(x) == x * sigmoid(x)
     Os = init_empty((m, n))
     silu_m.dispatch(A, Bt, Os)
     torch.cuda.synchronize()
-    ok &= _p("invariant silu==x*sigmoid(x)", torch.allclose(Os.float(), D * torch.sigmoid(D), rtol=2e-2, atol=1e-1))
+    ok &= _p("invariant silu==x*sigmoid(x)", torch.allclose(Os.float(), D * torch.sigmoid(D), rtol=2e-2, atol=1e-1))  # fp32-recomputed invariant -> looser than bf16 RTOL/ATOL
 
     # rmsnorm with r=1/rms(D), gamma=1 -> every output row has ~unit RMS
     r = torch.rsqrt(D.pow(2).mean(-1) + EPS).to(DTYPE)
@@ -230,7 +245,7 @@ def test_invariants(noop, scale_m, rms_m, resadd_m, silu_m):
     rms_m.dispatch(A, Bt, Orm, r, g1)
     torch.cuda.synchronize()
     row_rms = Orm.float().pow(2).mean(-1).sqrt()
-    ok &= _p("invariant rmsnorm unit-RMS rows", torch.allclose(row_rms, torch.ones(m, device="cuda"), rtol=5e-2, atol=5e-2))
+    ok &= _p("invariant rmsnorm unit-RMS rows", torch.allclose(row_rms, torch.ones(m, device="cuda"), rtol=5e-2, atol=5e-2))  # row RMS within 5% (fp32 recompute)
     return ok
 
 
