@@ -42,3 +42,34 @@ def make_swiglu(W_gate_up):
         torch.cuda.synchronize()
         return out
     return forward
+
+
+def rmsnorm_swiglu_ref(X, gamma, W_gate_up, r):
+    """fp32 reference for the RMS->SwiGLU kernel: out = swiglu( r * (X @ Wg) ), where Wg folds the
+    pre-norm per-d_model scale `gamma` into W_gate_up's ROWS (the contraction axis) and `r` is the
+    precomputed per-row inv-rms. Mirrors the kernel's bf16 inputs (gamma-fold + r are bf16-rounded)
+    and its order (GEMM in fp32 accum, THEN per-row r, THEN swiglu)."""
+    d_ff = W_gate_up.shape[1] // 2
+    Wg = (W_gate_up.float() * gamma.float()[:, None]).to(DTYPE).float()   # bf16-rounded gamma fold
+    H = (X.float() @ Wg) * r.float()[:, None]                            # GEMM then per-row r
+    return torch.nn.functional.silu(H[:, :d_ff]) * H[:, d_ff:]
+
+
+def make_rmsnorm_swiglu(W_gate_up, gamma):
+    """Prepare the RMS->SwiGLU projection once: fold the norm's per-d_model `gamma` into the weight's
+    rows, permute the gate_up columns, transpose. Returns forward(X, r) -> swiglu(r*(X@Wg)) [M, d_ff],
+    where `r` is the precomputed per-row inv-rms (bf16). Rebuild if W_gate_up/gamma change."""
+    import tk_rmsnorm_swiglu
+    d_ff = W_gate_up.shape[1] // 2
+    Wg = (W_gate_up.to(device="cuda", dtype=DTYPE).float()
+          * gamma.to(device="cuda", dtype=DTYPE).float()[:, None]).to(DTYPE)   # fold gamma into rows
+    Wt = Wg[:, gate_up_perm(d_ff)].t().contiguous()                            # [2*d_ff, d_model]
+
+    def forward(X, r):
+        X = X.to(device="cuda", dtype=DTYPE).contiguous()
+        r = r.to(device="cuda", dtype=DTYPE).contiguous()
+        out = torch.empty(X.shape[0], d_ff, dtype=DTYPE, device="cuda")
+        tk_rmsnorm_swiglu.dispatch(X, Wt, out, r)
+        torch.cuda.synchronize()
+        return out
+    return forward

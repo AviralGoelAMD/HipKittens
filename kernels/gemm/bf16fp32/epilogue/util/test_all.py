@@ -122,6 +122,22 @@ def test_swiglu():
     return ok
 
 
+def test_rmsnorm_swiglu():
+    import swiglu as sg
+    ok = True
+    for (m, d_ff, k) in [(256,128,256),(512,256,256),(256,512,128),(768,512,256),(2048,1024,512)]:
+        X = init_randn((m, k)); W = init_randn((k, 2*d_ff)); gamma = init_randn((k,))
+        r = torch.rsqrt(X.float().pow(2).mean(-1) + EPS).to(DTYPE)   # precomputed per-row inv-rms (bf16)
+        out = sg.make_rmsnorm_swiglu(W, gamma)(X, r)
+        fin = bool(torch.isfinite(out).all())
+        ref = sg.rmsnorm_swiglu_ref(X, gamma, W, r)
+        e = (out.float() - ref).abs().max().item()
+        ok &= _p(f"rmsnorm_swiglu {(m,d_ff,k)}",
+                 fin and torch.allclose(out.float(), ref, rtol=RTOL, atol=ATOL),
+                 f"max_err={e:.3g}" + ("" if fin else " NON-FINITE"))
+    return ok
+
+
 def test_partialrms(noop, prms):
     ok = True
     for (m, n, k) in SHAPES:
@@ -290,6 +306,7 @@ def main():
         ("[base GEMM]",           test_base_gemm,        (noop,)),
         ("[registry epilogues]",  test_registry,         (noop,)),
         ("[swiglu]",              test_swiglu,           ()),
+        ("[rmsnorm_swiglu]",      test_rmsnorm_swiglu,   ()),
         ("[partialrms]",          test_partialrms,       (noop, prms)),
         ("[residual_rms]",        test_residual_rms,     (rr,)),
         ("[residual_rms -> aux]", test_residual_rms_aux, (rr, aux)),
