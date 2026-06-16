@@ -290,6 +290,23 @@ def test_rope(rope_m):
     return ok
 
 
+def test_rmsnorm_rope():
+    import rope as rp
+    ok = True
+    for (m, n, k) in ROPE_SHAPES:
+        X = init_randn((m, k)); W = init_randn((k, n)); gamma = init_randn((k,))
+        r = torch.rsqrt(X.float().pow(2).mean(-1) + EPS).to(DTYPE)   # precomputed per-row inv-rms (bf16)
+        cos_sin = rp.make_cos_sin(m, n)
+        out = rp.make_rmsnorm_rope(W, gamma)(X, r, cos_sin)
+        fin = bool(torch.isfinite(out).all())
+        ref = rp.rmsnorm_rope_ref(X, gamma, W, r, cos_sin)
+        e = (out.float() - ref).abs().max().item()
+        ok &= _p(f"rmsnorm_rope {(m,n,k)}",
+                 fin and torch.allclose(out.float(), ref, rtol=RTOL, atol=ATOL),
+                 f"max_err={e:.3g}" + ("" if fin else " NON-FINITE"))
+    return ok
+
+
 def main():
     noop     = importlib.import_module("tk_noop")
     scale_m  = importlib.import_module("tk_scale")
@@ -313,6 +330,7 @@ def main():
         ("[aux_reduce]",          test_aux_reduce,       (aux,)),
         ("[chain]",               test_chain,            ()),
         ("[rope]",                test_rope,             (rope_m,)),
+        ("[rmsnorm_rope]",        test_rmsnorm_rope,     ()),
         ("[invariants]",          test_invariants,       (noop, scale_m, rms_m, resadd_m, silu_m)),
     ]
     allpass = True

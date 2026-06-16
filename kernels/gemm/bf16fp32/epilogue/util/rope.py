@@ -61,3 +61,37 @@ def make_rope(W):
         tk_rope.dispatch(X, Wt, O, csp)
         return O
     return forward
+
+
+def rmsnorm_rope_ref(X, gamma, W, r, cos_sin):
+    """fp32 reference for the RMS->RoPE kernel: out = RoPE( r * (X @ Wg) ) in rope_perm'd column
+    order, where Wg folds the pre-norm per-d_model `gamma` into W's ROWS (the contraction axis) and
+    `r` is the precomputed per-row inv-rms. RoPE rotates the NATURAL interleaved (2k,2k+1) pairs; the
+    output is THEN rope_perm'd (the kernel rotates the same pairs via co-resident registers and stores
+    permuted -- so it is rope(r*(X@Wg), cos_sin)[:, perm], like the standalone rope reference)."""
+    perm = rope_perm(W.shape[1])
+    Wg = (W.float() * gamma.float()[:, None]).to(DTYPE).float()          # bf16-rounded gamma fold
+    Dnat = (X.float() @ Wg) * r.float()[:, None]                        # natural order, per-row r
+    return rope_ref(Dnat, cos_sin)[:, perm]                              # rotate NATURAL pairs, THEN permute output
+
+
+def make_rmsnorm_rope(W, gamma):
+    """Prepare the RMS->RoPE projection once: fold the norm's per-d_model `gamma` into the weight's
+    rows, rope_perm the columns, transpose. Returns forward(X, r, cos_sin) -> RoPE(r*(X@Wg)) [M, N],
+    owning the weight + cos_sin permutation. `r` is the precomputed per-row inv-rms (bf16); cos_sin is
+    natural [M, N]. Rebuild if W/gamma change."""
+    import tk_rmsnorm_rope
+    perm = rope_perm(W.shape[1])
+    Wg = (W.to(device="cuda", dtype=DTYPE).float()
+          * gamma.to(device="cuda", dtype=DTYPE).float()[:, None]).to(DTYPE)   # fold gamma into rows
+    Wt = Wg[:, perm].t().contiguous()                                          # [N, d_model]
+
+    def forward(X, r, cos_sin):
+        X = X.to(device="cuda", dtype=DTYPE).contiguous()
+        r = r.to(device="cuda", dtype=DTYPE).contiguous()
+        csp = cos_sin[:, perm].to(device="cuda", dtype=DTYPE).contiguous()     # same perm as the weight
+        O = torch.empty(X.shape[0], W.shape[1], dtype=DTYPE, device="cuda")
+        tk_rmsnorm_rope.dispatch(X, Wt, O, r, csp)
+        torch.cuda.synchronize()
+        return O
+    return forward
