@@ -167,6 +167,51 @@ def run_mlp(iters, warm, shapes=None):
     return rows
 
 
+def run_ffn(iters, warm, shapes=None):
+    """Fully-fused FFN sublayer (pre-norm): y = x + swiglu(rmsnorm(h,gamma) @ W_gate_up) @ W_down.
+    Upgrades run_mlp to INCLUDE the norm: HK folds the RMSNorm scale into the gate_up GEMM
+    (rmsnorm_swiglu) and the residual into the down GEMM, so only the 1/rms reduction over d_model is
+    separate -- and in a real block that r is emitted by the prior out-proj GEMM (residual_rms), so it
+    is precomputed here (free in-context). Baseline: torch.compile max-autotune, which fuses the norm
+    but still round-trips the 2*d_ff intermediate through the opaque vendor mm."""
+    import tk_rmsnorm_swiglu, tk_residual_add
+    import torch._dynamo
+    from swiglu import gate_up_perm
+    F = torch.nn.functional
+    shapes = shapes or [(2048, 4096, 11008), (4096, 4096, 11008), (8192, 4096, 11008)]  # (M, d_model, d_ff)
+    torch._dynamo.config.cache_size_limit = max(64, 4 * len(shapes))
+    rows = []
+    for (M, dm, dff) in shapes:
+        h = init_randn((M, dm)); x = init_randn((M, dm))                 # pre-norm activation + residual
+        gamma = init_randn((dm,)); Wgu = init_randn((dm, 2 * dff)); Wd = init_randn((dff, dm))
+        Wgu_pt = ((Wgu.float() * gamma.float()[:, None]).to(DTYPE)[:, gate_up_perm(dff).to(Wgu.device)]
+                  .t().contiguous())                                     # gamma-folded + gate_up-permuted + T
+        Wd_t = Wd.t().contiguous()
+        r = torch.rsqrt(h.float().pow(2).mean(-1) + EPS).to(DTYPE)       # precomputed (prior GEMM emits it in a real block)
+        a_buf = init_empty((M, dff)); y_hk = init_empty((M, dm))
+        def hk(i):
+            tk_rmsnorm_swiglu.dispatch(h, Wgu_pt, a_buf, r)
+            tk_residual_add.dispatch(a_buf, Wd_t, y_hk, x)
+        def _ffn(h, gamma, Wgu, Wd, x):
+            n = h * torch.rsqrt(h.pow(2).mean(-1, keepdim=True) + EPS) * gamma
+            gu = n @ Wgu
+            return x + (F.silu(gu[:, :dff]) * gu[:, dff:]) @ Wd
+        ffn_c = torch.compile(_ffn, mode="max-autotune-no-cudagraphs", dynamic=False)
+        def compiled(i): ffn_c(h, gamma, Wgu, Wd, x)
+        def eager(i):    _ffn(h, gamma, Wgu, Wd, x)
+        hk(0); torch.cuda.synchronize()
+        n = h.float() * torch.rsqrt(h.float().pow(2).mean(-1, keepdim=True) + EPS) * gamma.float()
+        gu = n @ Wgu.float()
+        ref = x.float() + (F.silu(gu[:, :dff]) * gu[:, dff:]) @ Wd.float()
+        rel = (y_hk.float() - ref).norm().item() / ref.norm().item()
+        ffn_c(h, gamma, Wgu, Wd, x); torch.cuda.synchronize()           # trigger compile pre-timing
+        t_hk, t_c, t_e = _bench(hk, iters, warm), _bench(compiled, iters, warm), _bench(eager, iters, warm)
+        rows.append({"shape": [M, dm, dff], "hk_ms": round(t_hk, 4), "compile_ms": round(t_c, 4),
+                     "eager_ms": round(t_e, 4), "vs_compile": round(t_c / t_hk, 3),
+                     "rel": round(rel, 4), "ok": bool(rel < 2e-2)})
+    return rows
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--kernels", default=",".join(k for k in EPILOGUES if k != "noop" and "ref" in EPILOGUES[k]))
@@ -175,10 +220,11 @@ def main():
     ap.add_argument("--no-chain", action="store_true")
     ap.add_argument("--no-epilogue", action="store_true")
     ap.add_argument("--mlp", action="store_true")
+    ap.add_argument("--ffn", action="store_true")
     ap.add_argument("--json", default=None)
     a = ap.parse_args()
 
-    out = {"epilogues": [], "swiglu": [], "mlp": [], "chain": []}
+    out = {"epilogues": [], "swiglu": [], "mlp": [], "ffn": [], "chain": []}
     if not a.no_epilogue:
         print(f"{'kernel':<16}{'shape':<22}{'fused ms':>10}{'torch ms':>10}{'speedup':>9}{'saved MB':>10}{'ok':>4}")
         for kern in a.kernels.split(","):
@@ -195,6 +241,11 @@ def main():
         for r in run_mlp(a.iters, a.warm):
             out["mlp"].append(r)
             print(f"{str(tuple(r['shape'])):<24}{r['hk_ms']:>9}{r['compile_ms']:>9}{r['eager_ms']:>9}{r['vendor2_ms']:>9}{r['hk2_ms']:>9}{r['vs_compile']:>9}{r['rel']:>8}{'Y' if r['ok'] else 'N':>4}")
+    if a.ffn:
+        print(f"\n{'ffn (M,d_model,d_ff)':<24}{'hk ms':>9}{'compile':>9}{'eager':>9}{'vs_comp':>9}{'rel':>8}{'ok':>4}")
+        for r in run_ffn(a.iters, a.warm):
+            out["ffn"].append(r)
+            print(f"{str(tuple(r['shape'])):<24}{r['hk_ms']:>9}{r['compile_ms']:>9}{r['eager_ms']:>9}{r['vs_compile']:>9}{r['rel']:>8}{'Y' if r['ok'] else 'N':>4}")
     if not a.no_chain:
         print(f"\n{'chain (M,K0,N,P)':<24}{'hk ms':>10}{'torch ms':>10}{'speedup':>9}{'rel':>8}{'ok':>4}")
         for r in run_chain(a.iters, a.warm):
