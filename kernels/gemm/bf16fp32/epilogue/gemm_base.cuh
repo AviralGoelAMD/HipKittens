@@ -336,3 +336,21 @@ void launch_swiglu(Globals g) {
     gemm_kernel<Epilogue, Globals><<<dim3((N / BLOCK_SIZE) * (M / BLOCK_SIZE)), dim3(NUM_THREADS), mem, g.stream>>>(g, M, N, K);
     CHECK_CUDA_ERROR(hipGetLastError());
 }
+
+// Launch for partials-only epilogues that NEVER store the [M,N] accumulator (cross-entropy): there
+// is no `c` operand at all, so the GEMM N comes from operand b ([N, K]). The kernel computes the
+// full N-wide accumulator; the epilogue consumes it in registers and emits only its reductions.
+template<typename Epilogue, typename Globals>
+void launch_partials_only(Globals g) {
+    const int M = g.a.rows(), N = g.b.rows(), K = g.a.cols();
+    if (M % BLOCK_SIZE || N % BLOCK_SIZE)
+        throw std::runtime_error("partials_only: M and N must be multiples of BLOCK_SIZE (256)");
+    if (K % K_ALIGN)
+        throw std::runtime_error("partials_only: K must be a multiple of 128");
+    if (g.b.cols() != K)
+        throw std::runtime_error("partials_only: operand shape mismatch (need a=[M,K], b=[N,K])");
+    const size_t mem = MAX_SHARED_MEMORY;
+    CHECK_CUDA_ERROR(hipFuncSetAttribute((void*)gemm_kernel<Epilogue, Globals>, hipFuncAttributeMaxDynamicSharedMemorySize, mem));
+    gemm_kernel<Epilogue, Globals><<<dim3((N / BLOCK_SIZE) * (M / BLOCK_SIZE)), dim3(NUM_THREADS), mem, g.stream>>>(g, M, N, K);
+    CHECK_CUDA_ERROR(hipGetLastError());
+}
