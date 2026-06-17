@@ -212,6 +212,38 @@ def run_ffn(iters, warm, shapes=None):
     return rows
 
 
+def run_ce(iters, warm, shapes=None):
+    """Fused forward cross-entropy vs torch.compile -- the strategic gating number. HK emits the
+    per-row loss WITHOUT ever materializing the [M,vocab] fp32 logits; torch.compile (even
+    max-autotune) round-trips that full logits matrix through HBM (vendor mm cannot fuse the softmax
+    reduction in). Llama-scale vocab=32000, d_model=4096. saved_MB = the [M,vocab] fp32 logits
+    write+read torch pays and HK avoids."""
+    from cross_entropy import make_ce, ce_ref
+    import torch._dynamo
+    F = torch.nn.functional
+    shapes = shapes or [(2048, 32000, 4096), (4096, 32000, 4096), (8192, 32000, 4096)]  # (M, vocab, d)
+    torch._dynamo.config.cache_size_limit = max(64, 4 * len(shapes))
+    rows = []
+    for (M, vocab, d) in shapes:
+        h = init_randn((M, d)); W = init_randn((d, vocab))
+        labels = torch.randint(0, vocab, (M,), device="cuda")
+        fwd = make_ce(W)
+        def hk(i): fwd(h, labels)
+        def _ce(): return F.cross_entropy(h @ W, labels, reduction="none")
+        ce_c = torch.compile(_ce, mode="max-autotune-no-cudagraphs", dynamic=False)
+        def compiled(i): ce_c()
+        loss_hk = fwd(h, labels); torch.cuda.synchronize()
+        ref = ce_ref(h, W, labels)                                       # fp32 oracle
+        rel = (loss_hk.float() - ref).norm().item() / ref.norm().item()
+        ce_c(); torch.cuda.synchronize()                                # trigger compile pre-timing
+        t_hk, t_c = _bench(hk, iters, warm), _bench(compiled, iters, warm)
+        saved = M * vocab * 4 * 2                                        # [M,vocab] fp32 logits write+read
+        rows.append({"shape": [M, vocab, d], "hk_ms": round(t_hk, 4), "compile_ms": round(t_c, 4),
+                     "vs_compile": round(t_c / t_hk, 3), "rel": round(rel, 4),
+                     "ok": bool(rel < 2e-2), "saved_MB": round(saved / 1e6, 1)})
+    return rows
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--kernels", default=",".join(k for k in EPILOGUES if k != "noop" and "ref" in EPILOGUES[k]))
@@ -221,10 +253,11 @@ def main():
     ap.add_argument("--no-epilogue", action="store_true")
     ap.add_argument("--mlp", action="store_true")
     ap.add_argument("--ffn", action="store_true")
+    ap.add_argument("--ce", action="store_true")
     ap.add_argument("--json", default=None)
     a = ap.parse_args()
 
-    out = {"epilogues": [], "swiglu": [], "mlp": [], "ffn": [], "chain": []}
+    out = {"epilogues": [], "swiglu": [], "mlp": [], "ffn": [], "ce": [], "chain": []}
     if not a.no_epilogue:
         print(f"{'kernel':<16}{'shape':<22}{'fused ms':>10}{'torch ms':>10}{'speedup':>9}{'saved MB':>10}{'ok':>4}")
         for kern in a.kernels.split(","):
@@ -246,6 +279,11 @@ def main():
         for r in run_ffn(a.iters, a.warm):
             out["ffn"].append(r)
             print(f"{str(tuple(r['shape'])):<24}{r['hk_ms']:>9}{r['compile_ms']:>9}{r['eager_ms']:>9}{r['vs_compile']:>9}{r['rel']:>8}{'Y' if r['ok'] else 'N':>4}")
+    if a.ce:
+        print(f"\n{'ce (M,vocab,d)':<24}{'hk ms':>9}{'compile':>9}{'vs_comp':>9}{'rel':>8}{'saved MB':>10}{'ok':>4}")
+        for r in run_ce(a.iters, a.warm):
+            out["ce"].append(r)
+            print(f"{str(tuple(r['shape'])):<24}{r['hk_ms']:>9}{r['compile_ms']:>9}{r['vs_compile']:>9}{r['rel']:>8}{r['saved_MB']:>10}{'Y' if r['ok'] else 'N':>4}")
     if not a.no_chain:
         print(f"\n{'chain (M,K0,N,P)':<24}{'hk ms':>10}{'torch ms':>10}{'speedup':>9}{'rel':>8}{'ok':>4}")
         for r in run_chain(a.iters, a.warm):
