@@ -41,3 +41,42 @@ def make_ce(W_vocab):
         torch.cuda.synchronize()
         return loss
     return forward
+
+
+RMS_EPS = 1e-5
+
+
+def ce_rms_ref(h, gamma, W_lm, labels):
+    """fp32 oracle for K8: per-row cross-entropy of rmsnorm(h,gamma) @ W_lm vs labels, where
+    rmsnorm(h,gamma) = h * rsqrt(mean(h^2,-1,keepdim)+1e-5) * gamma."""
+    n = h.float() * torch.rsqrt(h.float().pow(2).mean(-1, keepdim=True) + RMS_EPS) * gamma.float()
+    logits = n @ W_lm.float()                                   # [M, vocab]
+    return torch.nn.functional.cross_entropy(logits, labels, reduction="none")
+
+
+def make_ce_rms(W_lm, gamma):
+    """Prepare the K8 vocab projection once: fold the norm's per-d_model `gamma` into W_lm's ROWS (the
+    contraction axis), then transpose [d_model, vocab] -> [vocab, d_model] (the kernel b operand).
+    Returns forward(h, labels) -> per-row loss [M]; r (per-row inv-rms) is computed from h each call.
+    Rebuild if W_lm/gamma change. (Mirrors make_rmsnorm_swiglu's gamma-fold + r.)"""
+    import tk_ce_rms, tk_ce_reduce
+    N = W_lm.shape[1]                                           # vocab
+    assert N % 256 == 0, f"vocab N={N} must be a multiple of 256"
+    Wg = (W_lm.to(device="cuda", dtype=DTYPE).float()
+          * gamma.to(device="cuda", dtype=DTYPE).float()[:, None]).to(DTYPE)   # bf16-rounded gamma fold
+    Wt = Wg.t().contiguous()                                    # [vocab, d_model]
+    groups = N // REG_BLOCK_N
+
+    def forward(h, labels):
+        h = h.to(device="cuda", dtype=DTYPE).contiguous()
+        M = h.shape[0]
+        r = torch.rsqrt(h.float().pow(2).mean(-1) + RMS_EPS).to(DTYPE).contiguous()  # per-row inv-rms (bf16)
+        labels = labels.to(device="cuda", dtype=torch.float32).contiguous()          # fp32 (exact: vocab << 2^24)
+        max_buf    = torch.empty((groups, M), dtype=torch.float32, device="cuda")
+        sumexp_buf = torch.empty((groups, M), dtype=torch.float32, device="cuda")
+        loss       = torch.empty((M,),        dtype=torch.float32, device="cuda")
+        tk_ce_rms.dispatch(h, Wt, max_buf, sumexp_buf, r)                            # r-scaled softmax partials
+        tk_ce_reduce.reduce_rms(max_buf, sumexp_buf, h, Wt, labels, r, loss)         # +O(K) r-scaled target dot
+        torch.cuda.synchronize()
+        return loss
+    return forward
