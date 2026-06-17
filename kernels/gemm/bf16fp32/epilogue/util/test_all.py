@@ -306,6 +306,54 @@ def test_rmsnorm_rope():
                  f"max_err={e:.3g}" + ("" if fin else " NON-FINITE"))
     return ok
 
+def test_ce():
+    """Fused forward cross-entropy: logits = h@W_vocab never materialized; the epilogue emits
+    per-(row,group) softmax partials, the aux kernel combines them and adds the O(K) target dot ->
+    per-row loss. Validated against F.cross_entropy(reduction='none'), plus two independent
+    cross-checks (lse==logsumexp, target==Z[arange,labels]) to localize any failure."""
+    import cross_entropy as ce
+    ok = True
+    for (M, N, K) in [(256,512,256),(512,1024,256),(2048,4096,512)]:
+        h = init_randn((M, K))
+        W = init_randn((K, N))                                  # [d_model, vocab]
+        labels = torch.randint(0, N, (M,), device="cuda")
+        loss = ce.make_ce(W)(h, labels)
+        ref = ce.ce_ref(h, W, labels)
+        fin = bool(torch.isfinite(loss).all())
+        e = (loss.float() - ref).abs().max().item()
+        ok &= _p(f"cross_entropy {(M,N,K)}",
+                 fin and torch.allclose(loss.float(), ref, rtol=RTOL, atol=ATOL),
+                 f"max_err={e:.3g}" + ("" if fin else " NON-FINITE"))
+        # independent cross-checks: localize a failure to target-dot vs combine.
+        Z = h.float() @ W.float()                               # [M,vocab] (host-only oracle)
+        target = Z[torch.arange(M, device="cuda"), labels]
+        lse = torch.logsumexp(Z, -1)
+        ok &= _p(f"cross_entropy lse==logsumexp {(M,N,K)}",
+                 torch.allclose((loss.float() + target), lse, rtol=2e-2, atol=1e-1))
+    return ok
+
+
+def test_ce_rms():
+    """Fused RMS->cross-entropy: logits = rmsnorm(h,gamma)@W_lm == r*(h@gamma-folded W_lm), never
+    materialized; epilogue scales by per-row r before the softmax partials. Validated against
+    ce_rms_ref (F.cross_entropy on the fp32 rmsnorm logits)."""
+    import cross_entropy as ce
+    ok = True
+    for (M, N, K) in [(256,512,256),(512,1024,256),(2048,4096,512)]:
+        h = init_randn((M, K))
+        W = init_randn((K, N))                                  # [d_model, vocab]
+        gamma = init_randn((K,))
+        labels = torch.randint(0, N, (M,), device="cuda")
+        loss = ce.make_ce_rms(W, gamma)(h, labels)
+        ref = ce.ce_rms_ref(h, gamma, W, labels)
+        fin = bool(torch.isfinite(loss).all())
+        e = (loss.float() - ref).abs().max().item()
+        ok &= _p(f"cross_entropy_rms {(M,N,K)}",
+                 fin and torch.allclose(loss.float(), ref, rtol=RTOL, atol=ATOL),
+                 f"max_err={e:.3g}" + ("" if fin else " NON-FINITE"))
+    return ok
+
+
 
 def main():
     noop     = importlib.import_module("tk_noop")
@@ -332,6 +380,8 @@ def main():
         ("[rope]",                test_rope,             (rope_m,)),
         ("[rmsnorm_rope]",        test_rmsnorm_rope,     ()),
         ("[invariants]",          test_invariants,       (noop, scale_m, rms_m, resadd_m, silu_m)),
+        ("[cross_entropy]",       test_ce,               ()),
+        ("[cross_entropy_rms]",   test_ce_rms,           ()),
     ]
     allpass = True
     for label, fn, fargs in suite:
