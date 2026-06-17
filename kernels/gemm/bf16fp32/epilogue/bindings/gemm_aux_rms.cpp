@@ -16,8 +16,9 @@ void dispatch(aux_globals g) {
         throw std::runtime_error("aux_rms.reduce: partials must be [1,1,N/REG_BLOCK_N,M] with M on the last axis (partials.cols() must equal r.cols()).");
     if (g.partials.rows() < 1)
         throw std::runtime_error("aux_rms.reduce: partials must have at least one group (partials.rows() >= 1).");
-    constexpr int TPB = 256;
-    rms_reduce<<<(M + TPB - 1) / TPB, TPB, 0, g.stream>>>(g.partials, g.r);
+    constexpr int TPB = 256;                                 // 4 wavefronts/block
+    const long long total = (long long)M * kittens::WARP_THREADS;   // one wavefront per row
+    rms_reduce<<<(int)((total + TPB - 1) / TPB), TPB, 0, g.stream>>>(g.partials, g.r);
     CHECK_CUDA_ERROR(hipGetLastError());
 }
 PYBIND11_MODULE(TK_MODULE_NAME, m) {
