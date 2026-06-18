@@ -5,7 +5,7 @@
 
 // tk_ce_reduce.reduce(max_buf, sumexp_buf, a, b, labels, loss): warp-per-row combine of the
 // per-(group,row) softmax partials into logsumexp PLUS the O(K) target dot <h[r], Wt[label[r]]>
-// -> per-row loss. reduce_rms(..., r, loss) is the K8 variant (target *= per-row inv-rms r).
+// -> per-row loss. reduce_rms(..., r, loss) is the RMS variant (target *= per-row inv-rms r).
 // a=h [M,K] bf16; b=Wt [N,K] bf16; partials=[1,1,N/REG_BLOCK_N,M]; labels/r/loss=[1,1,1,M].
 void dispatch(ce_aux_globals g) {
     const int M = g.loss.cols();

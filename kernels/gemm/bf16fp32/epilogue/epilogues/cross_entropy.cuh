@@ -4,7 +4,7 @@
 #include "reductions.cuh"
 #include "vec.cuh"        // apply_inv_rms (per-row 1/rms prepend, mirrors rmsnorm_swiglu)
 
-// K3 forward fused cross-entropy epilogue. The GEMM produces logits = h @ W_vocab in the fp32
+// Forward fused cross-entropy epilogue. The GEMM produces logits = h @ W_vocab in the fp32
 // accumulator; this epilogue emits ONLY per-(row, REG_BLOCK_N-col group) reductions -- the full
 // [M, vocab] logits are NEVER stored to HBM (there is no `c` operand). Two partials per
 // (group,row), both shaped [1,1,N/REG_BLOCK_N,M] (group on axis 2, row M on the last axis, matching
@@ -56,7 +56,7 @@ struct PartialLseEpilogue {
     }
 };
 
-// K8: RMS -> forward cross-entropy. logits = rmsnorm(h,gamma) @ W_lm == r * (h @ gamma-folded W_lm).
+// RMS -> forward cross-entropy. logits = rmsnorm(h,gamma) @ W_lm == r * (h @ gamma-folded W_lm).
 // The per-d_model gamma folds into W_lm's ROWS host-side; `r` is the precomputed per-row inv-rms
 // (bf16). apply_inv_rms scales the fp32 accumulator C by r BEFORE the max/sumexp, so the softmax
 // partials are r-scaled (correct); the aux kernel re-applies r to the directly-computed target dot.

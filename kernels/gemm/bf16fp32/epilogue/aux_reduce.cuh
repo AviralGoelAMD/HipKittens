@@ -36,10 +36,10 @@ __global__ void rms_reduce(const gl<float,-1,-1,-1,-1> partials, gl<bf16,-1,-1,-
 // <h[row,:], Wt[label[row],:]> (== logits[row,label[row]]) -- replacing the old O(vocab) mask-gather
 // the GEMM epilogue used to do over every column. One wavefront (64 lanes) per row:
 //   logsumexp = combine_g (max_buf[g,row], sumexp_buf[g,row])      (associative online softmax)
-//   target    = sum_k h[row,k] * Wt[label[row],k]                  (* r[row] for the K8 RMS path)
+//   target    = sum_k h[row,k] * Wt[label[row],k]                  (* r[row] for the RMS path)
 //   loss[row] = logsumexp - target.
 // Partials are [1,1,N/REG_BLOCK_N,M]; a=h [M,K]; b=Wt [N,K]; labels/r/loss are [1,1,1,M].
-struct ce_aux_globals {                 // K3 (cross-entropy)
+struct ce_aux_globals {                 // forward cross-entropy
     gl<float,-1,-1,-1,-1> max_buf;
     gl<float,-1,-1,-1,-1> sumexp_buf;
     _gl_A a;                            // h  [M,K]
@@ -48,7 +48,7 @@ struct ce_aux_globals {                 // K3 (cross-entropy)
     gl<float,-1,-1,-1,-1> loss;         // [1,1,1,M]
     hipStream_t stream;
 };
-struct ce_aux_rms_globals {             // K8 (RMS -> cross-entropy): + per-row inv-rms r
+struct ce_aux_rms_globals {             // RMS -> cross-entropy: + per-row inv-rms r
     gl<float,-1,-1,-1,-1> max_buf;
     gl<float,-1,-1,-1,-1> sumexp_buf;
     _gl_A a;
@@ -99,7 +99,7 @@ __global__ void cross_entropy_reduce(const gl<float,-1,-1,-1,-1> max_buf,
         t += ot;
     }
     if (lane == 0) {
-        if constexpr (RMS) t *= __bfloat162float(r_ptr[row]);    // K8: target = r[row] * <h, Wt[label]>
+        if constexpr (RMS) t *= __bfloat162float(r_ptr[row]);    // RMS path: target = r[row] * <h, Wt[label]>
         loss.raw_ptr[row] = (m + logf(s)) - t;
     }
 }

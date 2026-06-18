@@ -1,4 +1,4 @@
-"""cross_entropy.py - K3 forward fused cross-entropy helpers.
+"""cross_entropy.py - forward fused cross-entropy helpers (make_ce and make_ce_rms).
 
 The kernel computes logits = h @ W_vocab (a GEMM) and, in the epilogue, emits only per-(row,
 64-col-group) softmax partials (per-group max + sum-of-exp) -- the full [M, vocab] logits are NEVER
@@ -47,7 +47,7 @@ RMS_EPS = 1e-5
 
 
 def ce_rms_ref(h, gamma, W_lm, labels):
-    """fp32 oracle for K8: per-row cross-entropy of rmsnorm(h,gamma) @ W_lm vs labels, where
+    """fp32 oracle for the RMS path: per-row cross-entropy of rmsnorm(h,gamma) @ W_lm vs labels, where
     rmsnorm(h,gamma) = h * rsqrt(mean(h^2,-1,keepdim)+1e-5) * gamma."""
     n = h.float() * torch.rsqrt(h.float().pow(2).mean(-1, keepdim=True) + RMS_EPS) * gamma.float()
     logits = n @ W_lm.float()                                   # [M, vocab]
@@ -55,7 +55,7 @@ def ce_rms_ref(h, gamma, W_lm, labels):
 
 
 def make_ce_rms(W_lm, gamma):
-    """Prepare the K8 vocab projection once: fold the norm's per-d_model `gamma` into W_lm's ROWS (the
+    """Prepare the RMS->cross-entropy vocab projection once: fold the norm's per-d_model `gamma` into W_lm's ROWS (the
     contraction axis), then transpose [d_model, vocab] -> [vocab, d_model] (the kernel b operand).
     Returns forward(h, labels) -> per-row loss [M]; r (per-row inv-rms) is computed from h each call.
     Rebuild if W_lm/gamma change. (Mirrors make_rmsnorm_swiglu's gamma-fold + r.)"""
