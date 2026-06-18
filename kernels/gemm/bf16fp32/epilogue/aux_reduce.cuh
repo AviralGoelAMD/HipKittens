@@ -81,13 +81,18 @@ __global__ void cross_entropy_reduce(const gl<float,-1,-1,-1,-1> max_buf,
         s = s * __expf(m - nm) + sumexp_buf[{0, 0, g, row}] * __expf(mg - nm);
         m = nm;
     }
-    // (2) target logit = <h[row,:], Wt[label,:]> (O(K), not O(vocab)); lanes split K, both rows contiguous.
+    // (2) target logit = <h[row,:], Wt[label,:]> (O(K), not O(vocab)); lanes split K, both rows
+    // contiguous. Bounds-guard: a label outside [0, N) (an ignore_index pad token or a bad index)
+    // skips the O(K) dot -- no out-of-bounds Wt read -- and emits loss 0 for that row.
     const int   K     = a.cols();
     const int   label = (int)labels[{0, 0, 0, row}];
-    const bf16* hp = a.raw_ptr + (size_t)row   * K;
-    const bf16* wp = b.raw_ptr + (size_t)label * K;
+    const bool  valid = (label >= 0 && label < b.rows());       // uniform across the wavefront
     float t = 0.f;
-    for (int k = lane; k < K; k += WF) t += __bfloat162float(hp[k]) * __bfloat162float(wp[k]);
+    if (valid) {
+        const bf16* hp = a.raw_ptr + (size_t)row   * K;
+        const bf16* wp = b.raw_ptr + (size_t)label * K;
+        for (int k = lane; k < K; k += WF) t += __bfloat162float(hp[k]) * __bfloat162float(wp[k]);
+    }
     // (3) reduce across the 64 lanes: associative online-softmax combine + plain sum for the target.
     for (int off = WF / 2; off > 0; off >>= 1) {
         const float om = __shfl_down(m, off);
@@ -99,7 +104,11 @@ __global__ void cross_entropy_reduce(const gl<float,-1,-1,-1,-1> max_buf,
         t += ot;
     }
     if (lane == 0) {
-        if constexpr (RMS) t *= __bfloat162float(r_ptr[row]);    // RMS path: target = r[row] * <h, Wt[label]>
-        loss.raw_ptr[row] = (m + logf(s)) - t;
+        if (!valid) {
+            loss.raw_ptr[row] = 0.f;                             // ignored / OOB label -> 0 loss
+        } else {
+            if constexpr (RMS) t *= __bfloat162float(r_ptr[row]); // RMS path: target = r[row] * <h, Wt[label]>
+            loss.raw_ptr[row] = (m + logf(s)) - t;
+        }
     }
 }
