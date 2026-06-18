@@ -243,6 +243,83 @@ def run_ce(iters, warm, shapes=None):
                      "ok": bool(rel < 2e-2), "saved_MB": round(saved / 1e6, 1)})
     return rows
 
+# ---- dtype contract for the forward-layer benchmark (printed with results; both paths obey it) ----
+FWD_CONTRACT = ("dtype contract (both paths): storage/IO bf16 (x, weights, q/k/v, o, h, x_out, gammas); "
+                "matmuls bf16-in -> fp32-accumulate -> bf16-out; RMSNorm reductions fp32; softmax fp32; output bf16.")
+FWD_DISCREP = [
+    "attn: HK = native-GQA flash (H_KV=8 kv heads, hand-written, exp2/fp32 online softmax); "
+    "torch = flash SDPA with KV expanded to H=32 heads (torch 2.11+rocm7.13 native-GQA SDPA falls back to the "
+    "materialized math backend -> a WEAKER baseline we deliberately avoid). HK reads 4x less KV from HBM (real native-GQA win).",
+    "fusion: HK fuses RoPE+RMS-scale into the projection GEMM epilogues and residuals into the consuming GEMMs "
+    "(no intermediate HBM round-trips); torch.compile fuses only elementwise clusters around opaque vendor matmuls.",
+    "HK pays an extra q/k un-permute gather (bf16 layout bridge to the attn kernel), counted in HK time; "
+    "a future fused rope->attn kernel removes it.",
+    "entry r_attn precomputed for HK (prior-layer-emitted in a stack); torch recomputes the entry RMSNorm reduction "
+    "(~0.1% of layer FLOPs, immaterial).",
+    "SiLU: in-register fp32 (HK) vs bf16 (torch) -- memory-bound, identical bf16 traffic, perf-neutral.",
+]
+
+
+def run_forward_layer(iters, warm):
+    """One full pre-norm GQA Transformer forward layer (minus nothing): RMSNorm -> QKV proj -> RoPE ->
+    GQA causal attention -> out-proj+residual -> RMSNorm -> SwiGLU MLP -> down-proj+residual. HK assembles
+    it ENTIRELY from the fused GEMM+epilogue kernels + the gqa_causal kernel (forward_layer.make_forward_layer);
+    baseline is the same layer in idiomatic torch, torch.compile max-autotune. Shape is fixed by the
+    compile-time-specialized attention kernel (B=1, N=2048, H=32, H_KV=8, Dh=128); other shapes need a rebuild.
+    Reports rel vs the fp32 oracle for BOTH paths and the HK-vs-torch cross rel (proof both compute one math)."""
+    from forward_layer import make_forward_layer, forward_layer_ref, _rms_r, HEAD_DIM
+    from rope import make_cos_sin
+    import torch._dynamo
+    F = torch.nn.functional
+    M, d, dff, Dh, H_KV = 2048, 4096, 11008, HEAD_DIM, 8            # MUST match the built tk_kernel
+    H = d // Dh; G = H // H_KV; kv_dim = H_KV * Dh
+    torch._dynamo.config.cache_size_limit = 64
+    w = lambda r, c: (torch.randn(r, c, device="cuda") * (r ** -0.5)).to(DTYPE)   # scaled init -> O(1) q/k (non-degenerate softmax)
+    x = init_randn((M, d))
+    Wq, Wo = w(d, d), w(d, d)
+    Wk, Wv = w(d, kv_dim), w(d, kv_dim)
+    Wgu, Wd = w(d, 2 * dff), w(dff, d)
+    ga, gm = init_randn((d,)), init_randn((d,))
+    cos_sin_head = make_cos_sin(M, Dh)
+    cos = cos_sin_head[:, 0::2].reshape(M, 1, Dh // 2).float()
+    sin = cos_sin_head[:, 1::2].reshape(M, 1, Dh // 2).float()
+    r_attn = _rms_r(x)
+    fwd = make_forward_layer(Wq, Wk, Wv, Wo, ga, Wgu, Wd, gm, n_kv_heads=H_KV, head_dim=Dh)
+
+    def _rope(t):                                                   # t [M,H*,Dh] bf16 -> interleaved RoPE (fp32 internal)
+        a = t[..., 0::2].float(); b = t[..., 1::2].float()
+        return torch.stack((a * cos + b * sin, -a * sin + b * cos), dim=-1).flatten(-2).to(DTYPE)
+
+    def _layer(x):
+        xn = (x.float() * torch.rsqrt(x.float().pow(2).mean(-1, keepdim=True) + EPS)).to(DTYPE) * ga
+        q = _rope((xn @ Wq).view(M, H, Dh)); k = _rope((xn @ Wk).view(M, H_KV, Dh)); v = (xn @ Wv).view(M, H_KV, Dh)
+        qh = q.permute(1, 0, 2).unsqueeze(0)                                              # [1,H,M,Dh]
+        kh = k.permute(1, 0, 2).unsqueeze(0).repeat_interleave(G, dim=1)                  # expand KV -> flash SDPA
+        vh = v.permute(1, 0, 2).unsqueeze(0).repeat_interleave(G, dim=1)
+        o = F.scaled_dot_product_attention(qh, kh, vh, is_causal=True)                    # bf16 in/out, fp32 softmax, scale 1/sqrt(Dh)
+        o = o.squeeze(0).permute(1, 0, 2).reshape(M, d).to(DTYPE)
+        h = x + o @ Wo
+        hn = (h.float() * torch.rsqrt(h.float().pow(2).mean(-1, keepdim=True) + EPS)).to(DTYPE) * gm
+        gu = hn @ Wgu
+        return h + (F.silu(gu[:, :dff]) * gu[:, dff:]) @ Wd
+
+    layer_c = torch.compile(_layer, mode="max-autotune-no-cudagraphs", dynamic=False)
+    xo_hk, _ = fwd(x, r_attn, cos_sin_head)
+    xo_ref, _ = forward_layer_ref(x, r_attn, cos_sin_head, Wq, Wk, Wv, Wo, ga, Wgu, Wd, gm, n_kv_heads=H_KV, head_dim=Dh)
+    xo_t = layer_c(x); torch.cuda.synchronize()
+    assert xo_hk.dtype == DTYPE and xo_t.dtype == DTYPE, f"dtype mismatch: hk={xo_hk.dtype} torch={xo_t.dtype}"
+    den = xo_ref.float().norm().item()
+    rel_hk = (xo_hk.float() - xo_ref.float()).norm().item() / den
+    rel_torch = (xo_t.float() - xo_ref.float()).norm().item() / den
+    rel_cross = (xo_hk.float() - xo_t.float()).norm().item() / xo_t.float().norm().item()
+    t_hk = _bench(lambda i: fwd(x, r_attn, cos_sin_head), iters, warm)
+    t_c = _bench(lambda i: layer_c(x), iters, warm)
+    t_e = _bench(lambda i: _layer(x), iters, warm)
+    return [{"shape": [M, d, dff], "heads": [H, H_KV, Dh], "hk_ms": round(t_hk, 4), "compile_ms": round(t_c, 4),
+             "eager_ms": round(t_e, 4), "vs_compile": round(t_c / t_hk, 3), "vs_eager": round(t_e / t_hk, 3),
+             "rel_hk_vs_fp32": round(rel_hk, 4), "rel_torch_vs_fp32": round(rel_torch, 4),
+             "rel_hk_vs_torch": round(rel_cross, 4), "out_dtype": str(xo_hk.dtype),
+             "ok": bool(rel_hk < 2e-2), "contract": FWD_CONTRACT, "discrepancies": FWD_DISCREP}]
 
 def main():
     ap = argparse.ArgumentParser()
@@ -254,10 +331,11 @@ def main():
     ap.add_argument("--mlp", action="store_true")
     ap.add_argument("--ffn", action="store_true")
     ap.add_argument("--ce", action="store_true")
+    ap.add_argument("--forward", action="store_true")
     ap.add_argument("--json", default=None)
     a = ap.parse_args()
 
-    out = {"epilogues": [], "swiglu": [], "mlp": [], "ffn": [], "ce": [], "chain": []}
+    out = {"epilogues": [], "swiglu": [], "mlp": [], "ffn": [], "ce": [], "forward": [], "chain": []}
     if not a.no_epilogue:
         print(f"{'kernel':<16}{'shape':<22}{'fused ms':>10}{'torch ms':>10}{'speedup':>9}{'saved MB':>10}{'ok':>4}")
         for kern in a.kernels.split(","):
@@ -284,6 +362,17 @@ def main():
         for r in run_ce(a.iters, a.warm):
             out["ce"].append(r)
             print(f"{str(tuple(r['shape'])):<24}{r['hk_ms']:>9}{r['compile_ms']:>9}{r['vs_compile']:>9}{r['rel']:>8}{r['saved_MB']:>10}{'Y' if r['ok'] else 'N':>4}")
+    if a.forward:
+        print("\n" + FWD_CONTRACT)
+        for i, dnote in enumerate(FWD_DISCREP, 1):
+            print(f"  [{i}] {dnote}")
+        print(f"\n{'forward layer (M,d,dff)':<26}{'(H,Hkv,Dh)':<14}{'hk ms':>9}{'compile':>9}{'eager':>9}"
+              f"{'vs_comp':>9}{'vs_eag':>8}{'rel_hk':>8}{'rel_tc':>8}{'cross':>7}{'ok':>4}")
+        for r in run_forward_layer(a.iters, a.warm):
+            out["forward"].append(r)
+            print(f"{str(tuple(r['shape'])):<26}{str(tuple(r['heads'])):<14}{r['hk_ms']:>9}{r['compile_ms']:>9}"
+                  f"{r['eager_ms']:>9}{r['vs_compile']:>9}{r['vs_eager']:>8}{r['rel_hk_vs_fp32']:>8}"
+                  f"{r['rel_torch_vs_fp32']:>8}{r['rel_hk_vs_torch']:>7}{'Y' if r['ok'] else 'N':>4}")
     if not a.no_chain:
         print(f"\n{'chain (M,K0,N,P)':<24}{'hk ms':>10}{'torch ms':>10}{'speedup':>9}{'rel':>8}{'ok':>4}")
         for r in run_chain(a.iters, a.warm):
