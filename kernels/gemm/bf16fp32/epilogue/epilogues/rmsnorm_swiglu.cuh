@@ -15,6 +15,7 @@ struct RmsnormSwigluGlobals {
     hipStream_t stream;
 };
 struct RmsnormSwigluEpilogue {
+    static constexpr int out_cols(int n) { return n / 2; }   // dim-reducing: c is [M, d_ff] = N/2
     template<typename Globals, typename Accum>
     static __device__ inline void apply(const Globals& g, Accum& C, int row,int col,int wr,int wc){
         apply_inv_rms(g, C, row,col,wr,wc);   // r * (A@B), per-row (col_vec, mul_row)

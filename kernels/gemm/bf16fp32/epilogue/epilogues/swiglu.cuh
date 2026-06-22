@@ -8,6 +8,7 @@ using namespace kittens;
 // apart in a single lane -> silu(gate)*value is register-local).
 // Reuses gemm_args_base (no extra inputs); output c is [M, d_ff], b is the [2*d_ff, K] weight.
 struct SwigluEpilogue {
+    static constexpr int out_cols(int n) { return n / 2; }   // dim-reducing: c is [M, d_ff] = N/2
     template<typename Globals, typename Accum>
     static __device__ inline void apply(const Globals& g, Accum& C, int row,int col,int wr,int wc){
         silu_op(C[0][0]); silu_op(C[1][0]);          // gate <- silu(gate)

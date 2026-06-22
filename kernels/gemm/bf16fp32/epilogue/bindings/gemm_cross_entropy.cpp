@@ -12,7 +12,7 @@ void dispatch(CrossEntropyGlobals g) {
         throw std::runtime_error("cross_entropy: max/sumexp buffers must be [1,1,N/REG_BLOCK_N,M] (cols()==M)");
     if (g.max_buf.rows() != N / REG_BLOCK_N || g.sumexp_buf.rows() != N / REG_BLOCK_N)
         throw std::runtime_error("cross_entropy: max/sumexp buffers must have N/REG_BLOCK_N groups (rows())");
-    launch_partials_only<PartialLseEpilogue, CrossEntropyGlobals>(g);
+    launch<PartialLseEpilogue, CrossEntropyGlobals>(g);
 }
 
 PYBIND11_MODULE(TK_MODULE_NAME, m) {

@@ -300,55 +300,27 @@ void gemm_kernel(const Globals g, int M, int N, int K) {
     Epilogue::apply(g, C_accum, row, col, warp_row, warp_col);
 }
 
-// Single launch path for every gemm_kernel epilogue: fail-loud shape preconditions + checked HIP
-// calls. Bindings call this instead of hand-writing the launch.
+// Single launch path for EVERY gemm_kernel epilogue: fail-loud shape preconditions + checked HIP
+// calls. The GEMM width N always comes from operand b ([N,K]) -- for store epilogues that equals
+// c.cols(); for the dim-reducing SwiGLU c is half as wide; partials-only epilogues (cross-entropy)
+// have no `c` at all. The two former special cases are captured by an optional `out_cols` trait and
+// the `requires { g.c; }` guard, so one function covers all three. Bindings call this, not a launch
+// hand-write.
 template<typename Epilogue, typename Globals>
 void launch(Globals g) {
-    const int M = g.a.rows(), N = g.c.cols(), K = g.a.cols();
+    const int M = g.a.rows(), N = g.b.rows(), K = g.a.cols();   // N = the true GEMM width (b = [N,K])
     if (M % BLOCK_SIZE || N % BLOCK_SIZE)
         throw std::runtime_error("GEMM: M and N must be multiples of BLOCK_SIZE (256)");
     if (K % K_ALIGN)
         throw std::runtime_error("GEMM: K must be a multiple of 128");
-    if (g.c.rows() != M || g.b.rows() != N || g.b.cols() != K)
-        throw std::runtime_error("GEMM: operand shape mismatch (need a=[M,K], b=[N,K], c=[M,N])");
-    const size_t mem = MAX_SHARED_MEMORY;
-    CHECK_CUDA_ERROR(hipFuncSetAttribute((void*)gemm_kernel<Epilogue, Globals>, hipFuncAttributeMaxDynamicSharedMemorySize, mem));
-    gemm_kernel<Epilogue, Globals><<<dim3((N / BLOCK_SIZE) * (M / BLOCK_SIZE)), dim3(NUM_THREADS), mem, g.stream>>>(g, M, N, K);
-    CHECK_CUDA_ERROR(hipGetLastError());
-}
-
-// Launch for dim-reducing epilogues (SwiGLU): the GEMM N comes from operand b ([N_gemm, K]), not c.
-// The kernel still computes the full N_gemm-wide accumulator; the epilogue's store narrows it to c.
-template<typename Epilogue, typename Globals>
-void launch_swiglu(Globals g) {
-    const int M = g.a.rows(), N = g.b.rows(), K = g.a.cols();   // N = 2*d_ff (the true GEMM width)
-    const int N_out = g.c.cols();                                // d_ff
-    if (M % BLOCK_SIZE || N % BLOCK_SIZE)
-        throw std::runtime_error("SwiGLU: M and N(=2*d_ff) must be multiples of BLOCK_SIZE (256)");
-    if (K % K_ALIGN)
-        throw std::runtime_error("SwiGLU: K must be a multiple of 128");
-    if (N != 2 * N_out)
-        throw std::runtime_error("SwiGLU: b.rows() must equal 2*c.cols() (2*d_ff vs d_ff)");
-    if (g.c.rows() != M || g.b.cols() != K)
-        throw std::runtime_error("SwiGLU: operand shape mismatch (need a=[M,K], b=[2*d_ff,K], c=[M,d_ff])");
-    const size_t mem = MAX_SHARED_MEMORY;
-    CHECK_CUDA_ERROR(hipFuncSetAttribute((void*)gemm_kernel<Epilogue, Globals>, hipFuncAttributeMaxDynamicSharedMemorySize, mem));
-    gemm_kernel<Epilogue, Globals><<<dim3((N / BLOCK_SIZE) * (M / BLOCK_SIZE)), dim3(NUM_THREADS), mem, g.stream>>>(g, M, N, K);
-    CHECK_CUDA_ERROR(hipGetLastError());
-}
-
-// Launch for partials-only epilogues that NEVER store the [M,N] accumulator (cross-entropy): there
-// is no `c` operand at all, so the GEMM N comes from operand b ([N, K]). The kernel computes the
-// full N-wide accumulator; the epilogue consumes it in registers and emits only its reductions.
-template<typename Epilogue, typename Globals>
-void launch_partials_only(Globals g) {
-    const int M = g.a.rows(), N = g.b.rows(), K = g.a.cols();
-    if (M % BLOCK_SIZE || N % BLOCK_SIZE)
-        throw std::runtime_error("partials_only: M and N must be multiples of BLOCK_SIZE (256)");
-    if (K % K_ALIGN)
-        throw std::runtime_error("partials_only: K must be a multiple of 128");
     if (g.b.cols() != K)
-        throw std::runtime_error("partials_only: operand shape mismatch (need a=[M,K], b=[N,K])");
+        throw std::runtime_error("GEMM: operand shape mismatch (need a=[M,K], b=[N,K])");
+    if constexpr (requires { g.c; }) {                          // store epilogues validate the output tile (partials-only have no c)
+        int expect_cols = N;                                    // dim-reducing epilogues (SwiGLU) narrow it via out_cols
+        if constexpr (requires { Epilogue::out_cols(N); }) expect_cols = Epilogue::out_cols(N);
+        if (g.c.rows() != M || g.c.cols() != expect_cols)
+            throw std::runtime_error("GEMM: output c shape mismatch (need c.rows()==M and c.cols()==N, or N/2 for dim-reducing epilogues)");
+    }
     const size_t mem = MAX_SHARED_MEMORY;
     CHECK_CUDA_ERROR(hipFuncSetAttribute((void*)gemm_kernel<Epilogue, Globals>, hipFuncAttributeMaxDynamicSharedMemorySize, mem));
     gemm_kernel<Epilogue, Globals><<<dim3((N / BLOCK_SIZE) * (M / BLOCK_SIZE)), dim3(NUM_THREADS), mem, g.stream>>>(g, M, N, K);
