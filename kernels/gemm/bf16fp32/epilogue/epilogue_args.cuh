@@ -11,7 +11,7 @@ constexpr int REG_BLOCK_M      = BLOCK_SIZE / WARPS_M;
 constexpr int REG_BLOCK_N      = BLOCK_SIZE / WARPS_N;
 constexpr int HALF_REG_BLOCK_M = REG_BLOCK_M / 2;
 constexpr int HALF_REG_BLOCK_N = REG_BLOCK_N / 2;
-constexpr int   SUBTILES_PER_DIM = 2;     // accumulator fans out to SUBTILES_PER_DIM^2 sub-tiles (C_accum[2][2])
+constexpr int   SUBTILES_PER_DIM = 2;     // FIXED 2x2 register-accumulator fan-out (rt_fl[..][2][2]); NOT a tunable -- every ops/ consumer writes the 2x2 explicitly. The static_assert below is the guard.
 constexpr float RMS_EPS          = 1e-5f; // RMSNorm epsilon: r = rsqrt(mean(x^2) + RMS_EPS)
 
 constexpr int K_ALIGN = 2 * K_STEP;   // base GEMM requires K to be a multiple of 128 (two K-steps)

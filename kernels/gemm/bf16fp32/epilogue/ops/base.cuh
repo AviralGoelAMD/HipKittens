@@ -4,6 +4,7 @@ using namespace kittens;
 // Coordinate helper: the four {row,col} subtile coordinates an 8-warp block's accumulator
 // fans out to. Single source for the tile<->global mapping; every store/load/reduce op in ops/
 // derives its coords from it, so a layout change is one edit and they cannot drift.
+// The two row / two col sub-tile origins of the FIXED 2x2 fan-out (length-2, indexed [0]/[1] by every consumer).
 struct subtile_coords { int m[SUBTILES_PER_DIM]; int n[SUBTILES_PER_DIM]; };
 __device__ inline subtile_coords block_coords(int row,int col,int wr,int wc){
     return { {(row*SUBTILES_PER_DIM)*WARPS_M+wr, (row*SUBTILES_PER_DIM)*WARPS_M+WARPS_M+wr},
