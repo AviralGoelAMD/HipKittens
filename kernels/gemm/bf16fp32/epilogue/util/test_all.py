@@ -384,6 +384,10 @@ def test_ce_padded_vocab():
         e_mr = (masked_r.float() - ref_r).abs().max().item()
         ok &= _p(f"ce_rms padded masked==real_vocab (V={real_vocab}->{padded})",
                  torch.allclose(masked_r.float(), ref_r, rtol=RTOL, atol=ATOL), f"max_err={e_mr:.3g}")
+        pad_labels = torch.full((M,), real_vocab, dtype=torch.long, device="cuda")   # labels pointing into the pad region
+        loss_pad = ce.make_ce(W_pad, valid_n=real_vocab)(h, pad_labels)
+        ok &= _p(f"ce padded: pad-range label -> loss 0 (V={real_vocab}->{padded})",
+                 bool((loss_pad.float().abs() < 1e-6).all()), f"max|loss|={loss_pad.float().abs().max().item():.3g}")
     return ok
 
 

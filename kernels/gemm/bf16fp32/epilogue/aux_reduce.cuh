@@ -45,6 +45,7 @@ struct ce_aux_globals {                 // forward cross-entropy
     _gl_A a;                            // h  [M,K]
     _gl_B b;                            // Wt [N,K] (W_vocab transposed)
     gl<float,-1,-1,-1,-1> labels;       // [1,1,1,M]
+    gl<float,1,1,1,1>     valid_n{nullptr,nullptr,nullptr,nullptr,nullptr};   // real vocab; labels >= valid_n are pad slots -> ignored (loss 0)
     gl<float,-1,-1,-1,-1> loss;         // [1,1,1,M]
     hipStream_t stream;
 };
@@ -54,6 +55,7 @@ struct ce_aux_rms_globals {             // RMS -> cross-entropy: + per-row inv-r
     _gl_A a;
     _gl_B b;
     gl<float,-1,-1,-1,-1> labels;
+    gl<float,1,1,1,1>     valid_n{nullptr,nullptr,nullptr,nullptr,nullptr};   // real vocab; labels >= valid_n are pad slots -> ignored (loss 0)
     gl<bf16,-1,-1,-1,-1>  r;            // [1,1,1,M] per-row inv-rms (target *= r[row])
     gl<float,-1,-1,-1,-1> loss;
     hipStream_t stream;
@@ -64,6 +66,7 @@ __global__ void cross_entropy_reduce(const gl<float,-1,-1,-1,-1> max_buf,
                                      const gl<float,-1,-1,-1,-1> sumexp_buf,
                                      const _gl_A a, const _gl_B b,
                                      const gl<float,-1,-1,-1,-1> labels,
+                                     const float* __restrict__ valid_n_ptr,
                                      const bf16* __restrict__ r_ptr,
                                      gl<float,-1,-1,-1,-1> loss) {
     constexpr int WF = kittens::WARP_THREADS;                    // wavefront width (per arch: 64 CDNA4)
@@ -86,7 +89,7 @@ __global__ void cross_entropy_reduce(const gl<float,-1,-1,-1,-1> max_buf,
     // skips the O(K) dot -- no out-of-bounds Wt read -- and emits loss 0 for that row.
     const int   K     = a.cols();
     const int   label = (int)labels[{0, 0, 0, row}];
-    const bool  valid = (label >= 0 && label < b.rows());       // uniform across the wavefront
+    const bool  valid = (label >= 0 && label < (int) valid_n_ptr[0]);   // pad slots (label >= valid_n) ignored; valid_n == N when unpadded
     float t = 0.f;
     if (valid) {
         const bf16* hp = a.raw_ptr + (size_t)row   * K;

@@ -42,7 +42,7 @@ def make_ce(W_vocab, valid_n=None):
         sumexp_buf = torch.empty((groups, M), dtype=torch.float32, device="cuda")
         loss       = torch.empty((M,),        dtype=torch.float32, device="cuda")
         tk_cross_entropy.dispatch(h, Wt, max_buf, sumexp_buf, vn_t)                # softmax partials only (pad cols masked)
-        tk_ce_reduce.reduce(max_buf, sumexp_buf, h, Wt, labels, loss)             # +O(K) target dot
+        tk_ce_reduce.reduce(max_buf, sumexp_buf, h, Wt, labels, vn_t, loss)        # +O(K) target dot (pad-range labels ignored)
         torch.cuda.synchronize()
         return loss
     return forward
@@ -84,7 +84,7 @@ def make_ce_rms(W_lm, gamma, valid_n=None):
         sumexp_buf = torch.empty((groups, M), dtype=torch.float32, device="cuda")
         loss       = torch.empty((M,),        dtype=torch.float32, device="cuda")
         tk_ce_rms.dispatch(h, Wt, max_buf, sumexp_buf, vn_t, r)                      # r-scaled partials (pad cols masked)
-        tk_ce_reduce.reduce_rms(max_buf, sumexp_buf, h, Wt, labels, r, loss)         # +O(K) r-scaled target dot
+        tk_ce_reduce.reduce_rms(max_buf, sumexp_buf, h, Wt, labels, vn_t, r, loss)   # +O(K) r-scaled target dot (pad-range labels ignored)
         torch.cuda.synchronize()
         return loss
     return forward

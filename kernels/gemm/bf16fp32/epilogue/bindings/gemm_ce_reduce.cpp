@@ -23,7 +23,7 @@ void dispatch(ce_aux_globals g) {
     constexpr int TPB = 256;                                  // 4 wavefronts/block
     const long long total = (long long)M * kittens::WARP_THREADS;   // one wavefront per row
     cross_entropy_reduce<false><<<(int)((total + TPB - 1) / TPB), TPB, 0, g.stream>>>(
-        g.max_buf, g.sumexp_buf, g.a, g.b, g.labels, nullptr, g.loss);
+        g.max_buf, g.sumexp_buf, g.a, g.b, g.labels, g.valid_n.raw_ptr, nullptr, g.loss);
     CHECK_CUDA_ERROR(hipGetLastError());
 }
 
@@ -45,7 +45,7 @@ void dispatch_rms(ce_aux_rms_globals g) {
     constexpr int TPB = 256;
     const long long total = (long long)M * kittens::WARP_THREADS;   // one wavefront per row
     cross_entropy_reduce<true><<<(int)((total + TPB - 1) / TPB), TPB, 0, g.stream>>>(
-        g.max_buf, g.sumexp_buf, g.a, g.b, g.labels, g.r.raw_ptr, g.loss);
+        g.max_buf, g.sumexp_buf, g.a, g.b, g.labels, g.valid_n.raw_ptr, g.r.raw_ptr, g.loss);
     CHECK_CUDA_ERROR(hipGetLastError());
 }
 
@@ -53,9 +53,9 @@ PYBIND11_MODULE(TK_MODULE_NAME, m) {
     m.doc() = "tk cross-entropy reduce: softmax partials + O(K) target dot -> per-row loss";
     py::bind_function<dispatch>(m, "reduce",
         &ce_aux_globals::max_buf, &ce_aux_globals::sumexp_buf,
-        &ce_aux_globals::a, &ce_aux_globals::b, &ce_aux_globals::labels, &ce_aux_globals::loss);
+        &ce_aux_globals::a, &ce_aux_globals::b, &ce_aux_globals::labels, &ce_aux_globals::valid_n, &ce_aux_globals::loss);
     py::bind_function<dispatch_rms>(m, "reduce_rms",
         &ce_aux_rms_globals::max_buf, &ce_aux_rms_globals::sumexp_buf,
         &ce_aux_rms_globals::a, &ce_aux_rms_globals::b, &ce_aux_rms_globals::labels,
-        &ce_aux_rms_globals::r, &ce_aux_rms_globals::loss);
+        &ce_aux_rms_globals::valid_n, &ce_aux_rms_globals::r, &ce_aux_rms_globals::loss);
 }
