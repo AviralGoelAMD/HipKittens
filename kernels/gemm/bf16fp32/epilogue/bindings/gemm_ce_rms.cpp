@@ -22,5 +22,5 @@ PYBIND11_MODULE(TK_MODULE_NAME, m) {
     py::bind_function<dispatch>(m, "dispatch",
         &CrossEntropyRmsGlobals::a, &CrossEntropyRmsGlobals::b,
         &CrossEntropyRmsGlobals::max_buf, &CrossEntropyRmsGlobals::sumexp_buf,
-        &CrossEntropyRmsGlobals::r);
+        &CrossEntropyRmsGlobals::valid_n, &CrossEntropyRmsGlobals::r);
 }

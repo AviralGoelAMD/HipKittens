@@ -23,6 +23,7 @@ struct CrossEntropyGlobals {
     _gl_B b;                              // [N,K] bf16  (W_vocab transposed -> [vocab, d_model])
     gl<float,-1,-1,-1,-1> max_buf;       // [1,1,N/REG_BLOCK_N,M]  per-(group,row) softmax max
     gl<float,-1,-1,-1,-1> sumexp_buf;    // [1,1,N/REG_BLOCK_N,M]  per-(group,row) sum exp(logit-max)
+    gl<float,1,1,1,1>     valid_n{nullptr,nullptr,nullptr,nullptr,nullptr};   // real vocab: cols >= valid_n are zero-pad, masked out of softmax (== N when unpadded)
     hipStream_t stream;
 };
 
@@ -33,6 +34,19 @@ struct PartialLseEpilogue {
         using CV   = typename Tile::col_vec;             // one value per row
         subtile_coords co = block_coords(row,col,wr,wc);
         const int grp = col * WARPS_N + wc;              // column-group index (matches partial_row_sum_sq)
+
+        // Ragged vocab: when W_vocab is padded to a 256 multiple, columns >= valid_n are zero-padding.
+        // Mask them to a large-negative sentinel BEFORE the max/sumexp so exp(masked - max) == 0 -- the
+        // pad columns never enter logsumexp. A fully-padded warp-group then emits m=PAD_NEG, s=width;
+        // the aux's online-softmax combine zeroes it (exp(PAD_NEG - real_max) == 0). valid_n==N -> skip.
+        const int vn = (int) g.valid_n[{0, 0, 0, 0}];
+        if (vn < g.b.rows()) {
+            constexpr float PAD_NEG = -1e30f;
+            right_fill(C[0][0], C[0][0], vn - co.n[0] * HALF_REG_BLOCK_N, PAD_NEG);
+            right_fill(C[0][1], C[0][1], vn - co.n[1] * HALF_REG_BLOCK_N, PAD_NEG);
+            right_fill(C[1][0], C[1][0], vn - co.n[0] * HALF_REG_BLOCK_N, PAD_NEG);
+            right_fill(C[1][1], C[1][1], vn - co.n[1] * HALF_REG_BLOCK_N, PAD_NEG);
+        }
 
         // (a) per-row max over this warp's 64 cols.
         CV m0, m1;
@@ -66,6 +80,7 @@ struct CrossEntropyRmsGlobals {
     _gl_B b;                              // [N,K] bf16  (gamma-folded W_lm transposed -> [vocab, d_model])
     gl<float,-1,-1,-1,-1> max_buf;       // [1,1,N/REG_BLOCK_N,M]  per-(group,row) softmax max
     gl<float,-1,-1,-1,-1> sumexp_buf;    // [1,1,N/REG_BLOCK_N,M]  per-(group,row) sum exp(logit-max)
+    gl<float,1,1,1,1>     valid_n{nullptr,nullptr,nullptr,nullptr,nullptr};   // real vocab: cols >= valid_n are zero-pad, masked out of softmax (== N when unpadded)
     gl<bf16,-1,-1,-1,-1>  r;             // [1,1,1,M]  per-row inv-rms (M on the last axis)
     hipStream_t stream;
 };

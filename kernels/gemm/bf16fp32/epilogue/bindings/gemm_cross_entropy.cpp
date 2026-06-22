@@ -19,5 +19,5 @@ PYBIND11_MODULE(TK_MODULE_NAME, m) {
     m.doc() = "tk forward fused cross-entropy: per-(group,row) softmax partials only";
     py::bind_function<dispatch>(m, "dispatch",
         &CrossEntropyGlobals::a, &CrossEntropyGlobals::b,
-        &CrossEntropyGlobals::max_buf, &CrossEntropyGlobals::sumexp_buf);
+        &CrossEntropyGlobals::max_buf, &CrossEntropyGlobals::sumexp_buf, &CrossEntropyGlobals::valid_n);
 }

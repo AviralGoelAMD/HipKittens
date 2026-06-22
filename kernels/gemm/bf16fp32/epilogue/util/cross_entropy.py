@@ -20,14 +20,19 @@ def ce_ref(h, W_vocab, labels):
     return torch.nn.functional.cross_entropy(logits, labels, reduction="none")
 
 
-def make_ce(W_vocab):
+def make_ce(W_vocab, valid_n=None):
     """Prepare the vocab projection once: transpose W_vocab [d_model, vocab] -> [vocab, d_model] (the
-    kernel b operand). Returns forward(h, labels) -> per-row loss [M]. Rebuild if W_vocab changes."""
+    kernel b operand). `valid_n` = the real vocab when W_vocab is padded to a 256 multiple (columns
+    >= valid_n are masked out of the softmax); defaults to the full width (no padding). Returns
+    forward(h, labels) -> per-row loss [M]. Rebuild if W_vocab changes."""
     import tk_cross_entropy, tk_ce_reduce
     N = W_vocab.shape[1]                                        # vocab
     assert N % 256 == 0, f"vocab N={N} must be a multiple of 256"
     Wt = W_vocab.to(device="cuda", dtype=DTYPE).t().contiguous()   # [vocab, d_model]
     groups = N // REG_BLOCK_N
+    real_vocab = N if valid_n is None else int(valid_n)
+    assert 0 < real_vocab <= N, f"valid_n={valid_n} must be in (0, N={N}]"
+    vn_t = torch.full((1,), float(real_vocab), dtype=torch.float32, device="cuda")   # cols >= real_vocab masked
 
     def forward(h, labels):
         h = h.to(device="cuda", dtype=DTYPE).contiguous()
@@ -36,7 +41,7 @@ def make_ce(W_vocab):
         max_buf    = torch.empty((groups, M), dtype=torch.float32, device="cuda")
         sumexp_buf = torch.empty((groups, M), dtype=torch.float32, device="cuda")
         loss       = torch.empty((M,),        dtype=torch.float32, device="cuda")
-        tk_cross_entropy.dispatch(h, Wt, max_buf, sumexp_buf)                      # softmax partials only
+        tk_cross_entropy.dispatch(h, Wt, max_buf, sumexp_buf, vn_t)                # softmax partials only (pad cols masked)
         tk_ce_reduce.reduce(max_buf, sumexp_buf, h, Wt, labels, loss)             # +O(K) target dot
         torch.cuda.synchronize()
         return loss
@@ -54,7 +59,7 @@ def ce_rms_ref(h, gamma, W_lm, labels):
     return torch.nn.functional.cross_entropy(logits, labels, reduction="none")
 
 
-def make_ce_rms(W_lm, gamma):
+def make_ce_rms(W_lm, gamma, valid_n=None):
     """Prepare the RMS->cross-entropy vocab projection once: fold the norm's per-d_model `gamma` into W_lm's ROWS (the
     contraction axis), then transpose [d_model, vocab] -> [vocab, d_model] (the kernel b operand).
     Returns forward(h, labels) -> per-row loss [M]; r (per-row inv-rms) is computed from h each call.
@@ -66,6 +71,9 @@ def make_ce_rms(W_lm, gamma):
           * gamma.to(device="cuda", dtype=DTYPE).float()[:, None]).to(DTYPE)   # bf16-rounded gamma fold
     Wt = Wg.t().contiguous()                                    # [vocab, d_model]
     groups = N // REG_BLOCK_N
+    real_vocab = N if valid_n is None else int(valid_n)
+    assert 0 < real_vocab <= N, f"valid_n={valid_n} must be in (0, N={N}]"
+    vn_t = torch.full((1,), float(real_vocab), dtype=torch.float32, device="cuda")   # cols >= real_vocab masked
 
     def forward(h, labels):
         h = h.to(device="cuda", dtype=DTYPE).contiguous()
@@ -75,7 +83,7 @@ def make_ce_rms(W_lm, gamma):
         max_buf    = torch.empty((groups, M), dtype=torch.float32, device="cuda")
         sumexp_buf = torch.empty((groups, M), dtype=torch.float32, device="cuda")
         loss       = torch.empty((M,),        dtype=torch.float32, device="cuda")
-        tk_ce_rms.dispatch(h, Wt, max_buf, sumexp_buf, r)                            # r-scaled softmax partials
+        tk_ce_rms.dispatch(h, Wt, max_buf, sumexp_buf, vn_t, r)                      # r-scaled partials (pad cols masked)
         tk_ce_reduce.reduce_rms(max_buf, sumexp_buf, h, Wt, labels, r, loss)         # +O(K) r-scaled target dot
         torch.cuda.synchronize()
         return loss
