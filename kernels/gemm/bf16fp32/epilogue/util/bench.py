@@ -271,7 +271,8 @@ def run_forward_layer(iters, warm):
     from rope import make_cos_sin
     import torch._dynamo
     F = torch.nn.functional
-    M, d, dff, Dh, H_KV = 2048, 4096, 11008, HEAD_DIM, 8            # MUST match the built tk_kernel
+    M = int(os.environ.get("TK_FWD_M", "2048"))                     # decode/prefill sweep; gqa kernel rebuilt per M
+    d, dff, Dh, H_KV = 4096, 11008, HEAD_DIM, 8                     # MUST match the built tk_kernel (ATTN_N=M)
     H = d // Dh; G = H // H_KV; kv_dim = H_KV * Dh
     torch._dynamo.config.cache_size_limit = 64
     w = lambda r, c: (torch.randn(r, c, device="cuda") * (r ** -0.5)).to(DTYPE)   # scaled init -> O(1) q/k (non-degenerate softmax)
@@ -305,13 +306,17 @@ def run_forward_layer(iters, warm):
 
     layer_c = torch.compile(_layer, mode="max-autotune-no-cudagraphs", dynamic=False)
     xo_hk, _ = fwd(x, r_attn, cos_sin_head)
-    xo_ref, _ = forward_layer_ref(x, r_attn, cos_sin_head, Wq, Wk, Wv, Wo, ga, Wgu, Wd, gm, n_kv_heads=H_KV, head_dim=Dh)
     xo_t = layer_c(x); torch.cuda.synchronize()
     assert xo_hk.dtype == DTYPE and xo_t.dtype == DTYPE, f"dtype mismatch: hk={xo_hk.dtype} torch={xo_t.dtype}"
-    den = xo_ref.float().norm().item()
-    rel_hk = (xo_hk.float() - xo_ref.float()).norm().item() / den
-    rel_torch = (xo_t.float() - xo_ref.float()).norm().item() / den
     rel_cross = (xo_hk.float() - xo_t.float()).norm().item() / xo_t.float().norm().item()
+    if os.environ.get("TK_FWD_NOREF"):                 # huge M: skip the [H,M,M] fp32 oracle (OOMs); cross-rel validates
+        rel_hk = rel_torch = float("nan"); ok = rel_cross < 2e-2
+    else:
+        xo_ref, _ = forward_layer_ref(x, r_attn, cos_sin_head, Wq, Wk, Wv, Wo, ga, Wgu, Wd, gm, n_kv_heads=H_KV, head_dim=Dh)
+        den = xo_ref.float().norm().item()
+        rel_hk = (xo_hk.float() - xo_ref.float()).norm().item() / den
+        rel_torch = (xo_t.float() - xo_ref.float()).norm().item() / den
+        ok = rel_hk < 2e-2
     t_hk = _bench(lambda i: fwd(x, r_attn, cos_sin_head), iters, warm)
     t_c = _bench(lambda i: layer_c(x), iters, warm)
     t_e = _bench(lambda i: _layer(x), iters, warm)
@@ -319,7 +324,7 @@ def run_forward_layer(iters, warm):
              "eager_ms": round(t_e, 4), "vs_compile": round(t_c / t_hk, 3), "vs_eager": round(t_e / t_hk, 3),
              "rel_hk_vs_fp32": round(rel_hk, 4), "rel_torch_vs_fp32": round(rel_torch, 4),
              "rel_hk_vs_torch": round(rel_cross, 4), "out_dtype": str(xo_hk.dtype),
-             "ok": bool(rel_hk < 2e-2), "contract": FWD_CONTRACT, "discrepancies": FWD_DISCREP}]
+             "ok": bool(ok), "contract": FWD_CONTRACT, "discrepancies": FWD_DISCREP}]
 
 def main():
     ap = argparse.ArgumentParser()
