@@ -8,7 +8,7 @@ void dispatch(ResidualAddGlobals g) {
     launch<ResidualAddEpilogue, ResidualAddGlobals>(g);
 }
 PYBIND11_MODULE(TK_MODULE_NAME, m) {
-    m.doc() = "tk residual-add epilogue";
+    m.doc() = "tk residual-add epilogue: out = (A@B) + residual ([M,N] skip connection)";
     py::bind_function<dispatch>(m, "dispatch",
         &ResidualAddGlobals::a, &ResidualAddGlobals::b, &ResidualAddGlobals::c, &ResidualAddGlobals::residual);
 }

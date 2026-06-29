@@ -10,7 +10,7 @@ void dispatch(RMSNormScaleGlobals g) {
     launch<RMSNormScaleEpilogue, RMSNormScaleGlobals>(g);
 }
 PYBIND11_MODULE(TK_MODULE_NAME, m) {
-    m.doc() = "tk RMSNorm-scale epilogue: out = (A@B) * r * gamma";
+    m.doc() = "tk RMSNorm-scale epilogue: out = (A@B) * r (per-row 1/rms) * gamma (per-feature gamma)";
     py::bind_function<dispatch>(m, "dispatch",
         &RMSNormScaleGlobals::a, &RMSNormScaleGlobals::b, &RMSNormScaleGlobals::c,
         &RMSNormScaleGlobals::r, &RMSNormScaleGlobals::gamma);

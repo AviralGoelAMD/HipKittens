@@ -8,7 +8,7 @@ void dispatch(RmsnormSwigluGlobals g) {
     launch<RmsnormSwigluEpilogue, RmsnormSwigluGlobals>(g);
 }
 PYBIND11_MODULE(TK_MODULE_NAME, m) {
-    m.doc() = "tk RMS->SwiGLU epilogue: out = silu(gate)*value, gate|value = r*(A@B); dim-reducing [M,2*d_ff] -> [M,d_ff]";
+    m.doc() = "tk RMS->SwiGLU epilogue: out = silu(gate)*value, gate|value = r*(A@B); dim-reducing [M,2*d_ff] -> [M,d_ff] (requires gate_up_perm'd + gamma-folded weight)";
     py::bind_function<dispatch>(m, "dispatch",
         &RmsnormSwigluGlobals::a, &RmsnormSwigluGlobals::b, &RmsnormSwigluGlobals::c,
         &RmsnormSwigluGlobals::r);

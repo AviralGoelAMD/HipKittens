@@ -10,7 +10,7 @@ void dispatch(RmsnormRopeGlobals g) {
     launch<RmsnormRopeEpilogue, RmsnormRopeGlobals>(g);
 }
 PYBIND11_MODULE(TK_MODULE_NAME, m) {
-    m.doc() = "tk RMS->RoPE epilogue: out = RoPE(r * (A@B)), interleaved (requires rope_perm'd weight + cos_sin)";
+    m.doc() = "tk RMS->RoPE epilogue: out = RoPE(r * (A@B)), interleaved (requires rope_perm'd + gamma-folded weight + cos_sin)";
     py::bind_function<dispatch>(m, "dispatch",
         &RmsnormRopeGlobals::a, &RmsnormRopeGlobals::b, &RmsnormRopeGlobals::c,
         &RmsnormRopeGlobals::r, &RmsnormRopeGlobals::cos_sin);

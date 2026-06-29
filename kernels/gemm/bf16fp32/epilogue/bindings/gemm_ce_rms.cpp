@@ -2,7 +2,7 @@
 #include "cross_entropy.cuh"
 #include "pyutils/pyutils.cuh"
 
-// tk_ce_rms.dispatch(a, b, max_buf, sumexp_buf, r): fused RMS->forward cross-entropy GEMM
+// tk_ce_rms.dispatch(a, b, max_buf, sumexp_buf, valid_n, r): fused RMS->forward cross-entropy GEMM
 // epilogue. r scales the fp32 accumulator per row (rmsnorm(h,gamma)@W_lm == r*(h @ gamma-folded
 // W_lm)) BEFORE the softmax; emits per-(group,row) softmax partials only. The [M,vocab] logits are
 // NEVER materialized; the aux kernel computes the (r-scaled) target logit as the O(K) dot.
@@ -18,7 +18,7 @@ void dispatch(CrossEntropyRmsGlobals g) {
 }
 
 PYBIND11_MODULE(TK_MODULE_NAME, m) {
-    m.doc() = "tk RMS->forward cross-entropy: r*(A@B) then per-(group,row) softmax partials only";
+    m.doc() = "tk RMS->forward cross-entropy: r*(A@B) (per-row 1/rms) -> per-(group,row) softmax partials only";
     py::bind_function<dispatch>(m, "dispatch",
         &CrossEntropyRmsGlobals::a, &CrossEntropyRmsGlobals::b,
         &CrossEntropyRmsGlobals::max_buf, &CrossEntropyRmsGlobals::sumexp_buf,
