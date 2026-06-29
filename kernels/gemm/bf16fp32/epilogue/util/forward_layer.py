@@ -9,8 +9,8 @@ Reparameterization (CODA): RMSNorm(y,gamma) = r * y * gamma, r = 1/rms(y) per ro
 per-row it commutes through the next GEMM, and gamma scales the contracted axis so it folds into the
 next weight's ROWS. So each sublayer boundary is:
 
-    producing GEMM emits (residual stream h, partial Sum h^2)   [tk_residual_rms, gamma=ones]
-    aux combines the partials -> r = 1/rms(h)                   [tk_aux_rms]
+    producing GEMM emits (residual stream h, partial Sum h^2)   [tk_residual_rms_partials, gamma=ones]
+    aux combines the partials -> r = 1/rms(h)                   [tk_rms_reduce]
     consuming GEMM applies r in its epilogue (+ activation)     [rope q/k | scale v | swiglu gate-up]
 
 Multi-head attention wiring. q is [M, H*Dh], k/v are [M, H_KV*Dh] (grouped-query, GROUP=H/H_KV).
@@ -26,18 +26,18 @@ One layer (input residual stream x, precomputed r_attn = 1/rms(x)):
     k = unperm(RoPE_hl(r_attn * (x @ Wk_gfold)))   # tk_rmsnorm_rope  -> [M,H_KV,Dh]
     v =              r_attn * (x @ Wv_gfold)        # tk_rmsnorm_scale -> [M,H_KV,Dh]
     o = gqa_causal(q, k, v)                         # tk_kernel (GQA)  -> [M,H*Dh]=[M,d]
-    h = x + o @ Wo ; partials = Sum h^2             # tk_residual_rms  (gamma=ones)
-    r_mlp = 1/rms(h)                                # tk_aux_rms
+    h = x + o @ Wo ; partials = Sum h^2             # tk_residual_rms_partials (gamma=ones)
+    r_mlp = 1/rms(h)                                # tk_rms_reduce
     g = SwiGLU(r_mlp * (h @ Wgu_gfold))            # tk_rmsnorm_swiglu (gamma_mlp folded into Wgu rows)
-    x_out = h + g @ Wd ; partials = Sum x_out^2     # tk_residual_rms (gamma=ones) -> next layer's r_attn
-    r_attn_next = 1/rms(x_out)                      # tk_aux_rms
+    x_out = h + g @ Wd ; partials = Sum x_out^2     # tk_residual_rms_partials (gamma=ones) -> next layer's r_attn
+    r_attn_next = 1/rms(x_out)                      # tk_rms_reduce
 
 Shapes (batch=1, causal): x[M,d], Wq/Wo[d,d], Wk/Wv[d,H_KV*Dh], Wgu[d,2*dff], Wd[dff,d], gammas[d].
 Constraints inherited from the GEMM/attn: M,d,2*dff,dff,H_KV*Dh % 256 ; d % 128 ; Dh=128 ; H=d/Dh ;
 H % H_KV == 0. The attention module (tk_kernel) is compile-time specialized for (B,N,H,H_KV,Dh).
 """
 import math, os, sys, torch
-import tk_residual_rms, tk_aux_rms, tk_rmsnorm_scale
+import tk_residual_rms_partials, tk_rms_reduce, tk_rmsnorm_scale
 from swiglu import make_rmsnorm_swiglu, rmsnorm_swiglu_ref
 from rope import make_rmsnorm_rope, rmsnorm_rope_ref, make_cos_sin, rope_perm
 
@@ -57,16 +57,16 @@ def _rms_r(y):  # per-row inv-rms (bf16), the value the prior GEMM's aux would e
 
 
 def _k4(prev, Wt, residual):
-    """tk_residual_rms with gamma=ones: c = prev@W + residual (the residual stream), partials = Sum c^2;
+    """tk_residual_rms_partials with gamma=ones: c = prev@W + residual (the residual stream), partials = Sum c^2;
     returns (c, r=1/rms(c)). gamma=ones because the next norm's gamma folds into the next weight."""
     M, N = residual.shape
     c = torch.empty((M, N), dtype=DTYPE, device="cuda")
     save = torch.empty((M, N), dtype=DTYPE, device="cuda")
     partials = torch.empty((N // REG_BLOCK_N, M), dtype=torch.float32, device="cuda")
     g_ones = torch.ones(N, dtype=DTYPE, device="cuda")
-    tk_residual_rms.dispatch(prev, Wt, c, residual, g_ones, partials, save)
+    tk_residual_rms_partials.dispatch(prev, Wt, c, residual, g_ones, partials, save)
     r = torch.empty(M, dtype=DTYPE, device="cuda")
-    tk_aux_rms.reduce(partials, r)
+    tk_rms_reduce.reduce(partials, r)
     return c, r
 
 

@@ -15,7 +15,7 @@ void dispatch(ResidualRMSPartialsGlobals g) {
     launch<ResidualRMSPartialsEpilogue, ResidualRMSPartialsGlobals>(g);
 }
 PYBIND11_MODULE(TK_MODULE_NAME, m) {
-    m.doc() = "tk residual-RMS epilogue: h1 = A@B + residual -> save h1, emit Sigma(h1^2) partials, store h1*gamma";
+    m.doc() = "tk residual-RMS-partials epilogue: h1 = A@B + residual -> save h1, emit Sigma(h1^2) partials, store h1*gamma";
     py::bind_function<dispatch>(m, "dispatch",
         &ResidualRMSPartialsGlobals::a, &ResidualRMSPartialsGlobals::b, &ResidualRMSPartialsGlobals::c,
         &ResidualRMSPartialsGlobals::residual, &ResidualRMSPartialsGlobals::gamma,

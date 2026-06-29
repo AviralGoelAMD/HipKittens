@@ -4,8 +4,8 @@ Chains three kernels so the [M,N] intermediate never round-trips HBM:
 
     out = rmsnorm(X @ W0 + residual, gamma) @ W1
 
-  tk_residual_rms  : h1 = X@W0 + residual ;  c = h1*gamma ;  partials = per-(group,row) Sigma(h1^2)
-  tk_aux_rms       : partials             -> r = 1/rms(h1)   (per row; the cross-group combine)
+  tk_residual_rms_partials : h1 = X@W0 + residual ;  c = h1*gamma ;  partials = per-(group,row) Sigma(h1^2)
+  tk_rms_reduce    : partials             -> r = 1/rms(h1)   (per row; the cross-group combine)
   tk_rmsnorm_scale : out = (c @ W1) * r[:,None]             (gamma already folded into c above)
 
 Axis reasoning (why gamma folds into the first GEMM and only r post-applies in the second):
@@ -18,7 +18,7 @@ Axis reasoning (why gamma folds into the first GEMM and only r post-applies in t
   Hence the second GEMM runs with gamma = ones and the real r.
 """
 import torch
-import tk_residual_rms, tk_aux_rms, tk_rmsnorm_scale
+import tk_residual_rms_partials, tk_rms_reduce, tk_rmsnorm_scale
 
 DTYPE = torch.bfloat16
 EPS = 1e-5   # single source: RMS_EPS in epilogue_args.cuh (the aux kernel's rsqrt(.. + eps)) -- keep in sync
@@ -41,9 +41,9 @@ def make_fused_rmsnorm_block(W0, W1):
         c = torch.empty((M, N), dtype=DTYPE, device="cuda")
         save = torch.empty((M, N), dtype=DTYPE, device="cuda")        # h1 snapshot (unused in fwd; for bwd)
         partials = torch.empty((N // REG_BLOCK_N, M), dtype=torch.float32, device="cuda")  # kernel overwrites every (group,row)
-        tk_residual_rms.dispatch(X, W0t, c, residual, gamma, partials, save)
+        tk_residual_rms_partials.dispatch(X, W0t, c, residual, gamma, partials, save)
         r = torch.empty(M, dtype=DTYPE, device="cuda")
-        tk_aux_rms.reduce(partials, r)
+        tk_rms_reduce.reduce(partials, r)
         out = torch.empty((M, P), dtype=DTYPE, device="cuda")
         tk_rmsnorm_scale.dispatch(c, W1t, out, r, gamma_ones)         # r post-applied; gamma already in c
         torch.cuda.synchronize()

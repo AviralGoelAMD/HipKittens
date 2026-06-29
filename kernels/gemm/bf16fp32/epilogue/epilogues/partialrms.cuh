@@ -5,7 +5,7 @@
 // Per-(row, REG_BLOCK_N-col group) partial sum-of-squares for RMSNorm. Emits ONLY `partials`
 // (no C store); the aux kernel sums the groups per row -> Sigma(x^2) -> 1/rms.
 struct PartialRMSGlobals {
-    _gl_A a; _gl_B b; _gl_C c;
+    _gl_A a; _gl_B b;
     gl<float,-1,-1,-1,-1> partials;   // [1,1,N/REG_BLOCK_N,M]
     hipStream_t stream;
 };

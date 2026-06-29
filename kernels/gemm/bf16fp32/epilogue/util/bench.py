@@ -171,7 +171,7 @@ def run_ffn(iters, warm, shapes=None):
     """Fully-fused FFN sublayer (pre-norm): y = x + swiglu(rmsnorm(h,gamma) @ W_gate_up) @ W_down.
     Upgrades run_mlp to INCLUDE the norm: HK folds the RMSNorm scale into the gate_up GEMM
     (rmsnorm_swiglu) and the residual into the down GEMM, so only the 1/rms reduction over d_model is
-    separate -- and in a real block that r is emitted by the prior out-proj GEMM (residual_rms), so it
+    separate -- and in a real block that r is emitted by the prior out-proj GEMM (residual_rms_partials), so it
     is precomputed here (free in-context). Baseline: torch.compile max-autotune, which fuses the norm
     but still round-trips the 2*d_ff intermediate through the opaque vendor mm."""
     import tk_rmsnorm_swiglu, tk_residual_add

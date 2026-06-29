@@ -145,9 +145,8 @@ def test_partialrms(noop, prms):
         D = init_empty((m, n))
         noop.dispatch(A, Bt, D)                                # the SAME D the kernel squares
         torch.cuda.synchronize()
-        c = init_empty((m, n))
         partials = torch.zeros((n // REG_BLOCK_N, m), dtype=torch.float32, device="cuda")
-        prms.dispatch(A, Bt, c, partials)
+        prms.dispatch(A, Bt, partials)
         torch.cuda.synchronize()
         got = partials.sum(0)
         ref = D.float().pow(2).sum(-1)
@@ -475,8 +474,8 @@ def main():
     resadd_m = importlib.import_module("tk_residual_add")
     silu_m   = importlib.import_module("tk_silu")
     prms     = importlib.import_module("tk_partialrms")
-    rr       = importlib.import_module("tk_residual_rms")
-    aux      = importlib.import_module("tk_aux_rms")
+    rr       = importlib.import_module("tk_residual_rms_partials")
+    aux      = importlib.import_module("tk_rms_reduce")
     rope_m   = importlib.import_module("tk_rope")
 
     # (section label, test fn, args) -- run in order, AND the pass flags together
