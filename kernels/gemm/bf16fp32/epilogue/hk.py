@@ -1,0 +1,91 @@
+"""hk.py - a friendly Python API over the compiled GEMM-epilogue kernels.
+
+Registry-driven: the set of epilogues, and each one's kernel module + argument order, come from
+the EPILOGUES registry (the single source of truth shared with the test/bench runners). Adding a
+new epilogue needs NO change to this file.
+
+    out = hk.run("scale", A, B, 0.5)            # 0.5 * (A @ B)
+    out = hk.run("rmsnorm_scale", A, B, r, gamma)
+    out = hk.run("residual_add", A, B, residual)
+    out = hk.run("swiglu", X, W_gate_up)        # dim-reducing: [M,2*d_ff] -> [M,d_ff]
+    hk.available()                              # the epilogue names you can run
+
+Conveniences: B is passed normally (the wrapper transposes it for the kernel); scalars are plain
+Python floats (wrapped into the 1-element fp32 GPU tensor the kernel wants); tensors are moved to
+CUDA / bf16 / contiguous; the output buffer is allocated and returned. Shapes must satisfy
+M, N % 256 and K % 128 (the kernels enforce this and raise otherwise).
+
+Requires the compiled tk_*.so and util/ (for the registry) on the path -- run from this directory
+or add it to sys.path / PYTHONPATH.
+"""
+import os, sys, importlib
+import torch
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "util"))
+from epilogue_testlib import EPILOGUES   # single source of truth: name -> {module, args order, ...}
+
+DTYPE = torch.bfloat16
+
+
+def _coerce(x):
+    """A plain user value -> what the kernel expects:
+    float/int -> a 1-element fp32 GPU tensor (e.g. a scalar alpha);
+    tensor    -> CUDA, bf16, contiguous."""
+    if isinstance(x, (int, float)):
+        return torch.full((1,), float(x), dtype=torch.float32, device="cuda")
+    return x.to(device="cuda", dtype=DTYPE).contiguous()
+
+
+def _prep(A, B, b_transposed=False):
+    """Cast A to bf16; get the kernel's transposed B operand; return (A, Bt, M, N, K).
+    b_transposed=True: B is already that operand ([N,K]) -- skip the per-call copy."""
+    A = _coerce(A)
+    if b_transposed:
+        Bt = _coerce(B); N, K2 = Bt.shape         # already the kernel operand
+    else:
+        B = _coerce(B); K2, N = B.shape
+        Bt = B.t().contiguous()                   # kernel computes A @ Bt.t() == A @ B
+    M, K = A.shape
+    assert K == K2, f"inner dims disagree: A is {tuple(A.shape)}, B implies K={K2}"
+    return A, Bt, M, N, K
+
+
+def transpose(W):
+    """Transpose+contiguous a static weight ONCE (CUDA/bf16), to reuse via run(..., b_transposed=True)."""
+    return W.to(device="cuda", dtype=DTYPE).t().contiguous()
+
+
+def available():
+    """The epilogue names run() accepts (straight from the registry)."""
+    return sorted(EPILOGUES)
+
+
+def run(name, A, B, *extra, b_transposed=False):
+    """GEMM + the named epilogue. `extra` are that epilogue's own inputs, in binding order
+    (e.g. "scale" -> alpha; "rmsnorm_scale" -> r, gamma; "residual" -> residual). Returns the
+    output tensor. b_transposed=True: B is already the kernel's transposed operand (pass a weight
+    transposed once via hk.transpose(W)) -- skips the per-call weight copy on a hot path."""
+    # resolve the kernel module + its binding arg order from the registry
+    try:
+        spec = EPILOGUES[name]
+    except KeyError:
+        raise ValueError(f"unknown epilogue '{name}'; available: {available()}")
+    mod = importlib.import_module(spec["module"])
+    if spec.get("weight_perm") and b_transposed:
+        raise ValueError(f"'{name}' needs the gate_up column permutation; pass b_transposed=False "
+                         f"or use make_swiglu -- hk.transpose only transposes, it does not permute.")
+    if spec.get("weight_perm") and not b_transposed:
+        # dim-changing epilogues (swiglu) need the gate_up weight's columns permuted once so
+        # gate[j]/value[j] land register-co-resident. b_transposed callers must pre-permute.
+        B = _coerce(B)                                    # [d_model, weight width N]
+        B = B[:, spec["weight_perm"](B.shape[1]).to(B.device)].contiguous()
+    # coerce A and build the kernel's transposed B operand
+    A, Bt, M, N, K = _prep(A, B, b_transposed)
+    # output shape (out_shape handles dim-changing epilogues; swiglu halves N)
+    oh = spec.get("out_shape")
+    out_rows, out_cols = oh(M, N, K) if oh else (M, N)
+    C = torch.empty(out_rows, out_cols, dtype=DTYPE, device="cuda")
+    # launch the compiled epilogue kernel
+    mod.dispatch(A, Bt, C, *[_coerce(x) for x in extra])
+    torch.cuda.synchronize()
+    return C
