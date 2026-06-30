@@ -21,7 +21,16 @@ from block_chain import fused_rmsnorm_block, EPS
 LLC_BYTES = 256 * 1024 * 1024
 BUDGET    = 8 * 1024**3
 SHAPES       = [(2048, 1024, 512), (4096, 4096, 4096), (8192, 8192, 8192)]
-CHAIN_SHAPES = [(2048, 2048, 2048, 2048), (4096, 4096, 4096, 4096)]              # (M,K0,N,P)
+CHAIN_SHAPES = [  # (M,K0,N,P) for out = rmsnorm(X@W0 + res, gamma) @ W1 ; real Llama GEMM-Res-RMSNorm-GEMM boundaries
+    # out-proj -> RMSNorm -> gate/up : K0=N=d_model, P=2*d_ff  (1B / 7B / 70B, M-sweep)
+    (256, 2048, 2048, 11264), (2048, 2048, 2048, 11264), (8192, 2048, 2048, 11264),
+    (256, 4096, 4096, 22016), (2048, 4096, 4096, 22016), (8192, 4096, 4096, 22016), (16384, 4096, 4096, 22016),
+    (2048, 8192, 8192, 57344), (8192, 8192, 8192, 57344),
+    # down-proj -> RMSNorm -> QKV(GQA) : K0=d_ff, N=d_model, P=q+2*kv
+    (2048, 5632, 2048, 3072), (8192, 5632, 2048, 3072),
+    (256, 11008, 4096, 6144), (2048, 11008, 4096, 6144), (8192, 11008, 4096, 6144),
+    (2048, 28672, 8192, 10240),
+]
 CHAIN_REL = 2e-2   # normwise rel tolerance for the two-GEMM chain (matches test_all)
 
 
@@ -75,23 +84,63 @@ def run_epilogue(kernel, iters, warm):
 
 
 def run_chain(iters, warm):
-    # NOTE: inputs reused across iters (warm cache); small-shape HBM is understated vs run_epilogue's cold pool.
+    """GEMM-Residual-RMSNorm-GEMM chain vs torch.compile (max-autotune) + eager, cold-cache pool.
+    HK path calls the 3 kernels DIRECTLY with weights transposed ONCE and buffers pre-allocated (a
+    real hot loop). The one-shot block wrapper (fused_rmsnorm_block) would re-transpose BOTH weights
+    and torch.cuda.synchronize() every call -> it times the transpose, not the chain; it is "for tests
+    / one-offs", never a hot loop. Both baselines run the IDENTICAL ref fn (bf16 GEMMs + fp32 RMS
+    reduction + bf16 out as HK), no per-call sync (matches HK; _bench syncs once at the end). compile
+    warmed OUTSIDE the timed loop; HK and compiled both gated vs the same fp32 oracle. Cold rotating
+    pool so the saved [M,N] intermediate round-trip is measured, not cache-hidden. (max-autotune often
+    falls back to vendor GEMMs at compute-bound shapes; the M=256 row is where the fusion shows.)"""
+    import tk_residual_rms_partials, tk_rms_reduce, tk_rmsnorm_scale
+    import torch._dynamo
+    from block_chain import REG_BLOCK_N
+    torch._dynamo.config.cache_size_limit = max(64, 4 * len(CHAIN_SHAPES))
     rows = []
     for (M, K0, N, P) in CHAIN_SHAPES:
-        X = init_randn((M, K0)); W0 = init_randn((K0, N)); res = init_randn((M, N))
-        gamma = init_randn((N,)); W1 = init_randn((N, P))
-        def hk(i):   fused_rmsnorm_block(X, W0, res, gamma, W1)
-        def torch_(i):
-            h1 = X @ W0 + res                               # bf16 GEMM (matches HK; was fp32 -> unfair)
-            var = h1.float().pow(2).mean(-1, keepdim=True)  # RMS reduction in fp32 (as HK does)
+        per_set = (M * K0 + K0 * N + M * N + N * P) * DSIZE            # chain input footprint
+        NP = _pool_size(per_set, LLC_BYTES, BUDGET)
+        gamma_ones = torch.ones(P, dtype=DTYPE, device="cuda")        # 2nd GEMM: gamma already in c
+        pool = []
+        for _ in range(NP):
+            X = init_randn((M, K0)); W0 = init_randn((K0, N)); res = init_randn((M, N))
+            g = init_randn((N,)); W1 = init_randn((N, P))
+            W0t = W0.t().contiguous(); W1t = W1.t().contiguous()      # transpose static weights ONCE
+            buf = (init_empty((M, N)), init_empty((M, N)),            # c, save
+                   torch.empty((N // REG_BLOCK_N, M), dtype=torch.float32, device="cuda"),  # partials
+                   init_empty((M,)), init_empty((M, P)))              # r, out
+            pool.append((X, W0, res, g, W1, W0t, W1t, buf))
+        def hk(i):                                                    # direct dispatch, no transpose/sync
+            X, W0, res, g, W1, W0t, W1t, (c, save, partials, r, out) = pool[i % NP]
+            tk_residual_rms_partials.dispatch(X, W0t, c, res, g, partials, save)
+            tk_rms_reduce.reduce(partials, r)
+            tk_rmsnorm_scale.dispatch(c, W1t, out, r, gamma_ones)
+        def _chain(X, W0, res, gamma, W1):                            # the ref == HK's exact math + dtype
+            h1 = X @ W0 + res                                         # bf16 GEMM
+            var = h1.float().pow(2).mean(-1, keepdim=True)            # fp32 RMS reduction (as HK)
             hn = (h1 * torch.rsqrt(var + EPS) * gamma.float()).to(DTYPE)
-            return hn @ W1
-        out_hk = fused_rmsnorm_block(X, W0, res, gamma, W1); out_t = torch_(0); torch.cuda.synchronize()
-        rel = (out_hk.float() - out_t.float()).norm().item() / out_t.float().norm().item()
-        row = {"shape": [M, K0, N, P], "hk_ms": round(_bench(hk, iters, warm), 4),
-               "torch_ms": round(_bench(torch_, iters, warm), 4),
-               "rel": round(rel, 4), "ok": bool(rel < CHAIN_REL)}
-        rows.append(row)
+            return hn @ W1                                            # bf16 GEMM
+        chain_c = torch.compile(_chain, mode="max-autotune-no-cudagraphs", dynamic=False)
+        def eager(i):    X, W0, res, g, W1, *_ = pool[i % NP]; _chain(X, W0, res, g, W1)
+        def compiled(i): X, W0, res, g, W1, *_ = pool[i % NP]; chain_c(X, W0, res, g, W1)
+        # correctness + compile-warm (OUTSIDE timed loop): gate HK AND compiled vs the fp32 oracle
+        X, W0, res, g, W1, W0t, W1t, (c, save, partials, r, out) = pool[0]
+        tk_residual_rms_partials.dispatch(X, W0t, c, res, g, partials, save)
+        tk_rms_reduce.reduce(partials, r)
+        tk_rmsnorm_scale.dispatch(c, W1t, out, r, gamma_ones)
+        out_c = chain_c(X, W0, res, g, W1)                            # triggers the max-autotune compile
+        torch.cuda.synchronize()
+        h1f = X.float() @ W0.float() + res.float()
+        ref = (h1f * torch.rsqrt(h1f.pow(2).mean(-1, keepdim=True) + EPS) * g.float()) @ W1.float()
+        rel_hk = (out.float() - ref).norm().item() / ref.norm().item()
+        rel_c = (out_c.float() - ref).norm().item() / ref.norm().item()
+        t_hk, t_c, t_e = _bench(hk, iters, warm), _bench(compiled, iters, warm), _bench(eager, iters, warm)
+        rows.append({"shape": [M, K0, N, P], "pool": NP,
+                     "hk_ms": round(t_hk, 4), "compile_ms": round(t_c, 4), "eager_ms": round(t_e, 4),
+                     "vs_compile": round(t_c / t_hk, 3), "vs_eager": round(t_e / t_hk, 3),
+                     "rel": round(rel_hk, 4), "rel_compile": round(rel_c, 4),
+                     "ok": bool(rel_hk < CHAIN_REL and rel_c < CHAIN_REL)})
     return rows
 
 def run_swiglu(iters, warm, shapes=None):
@@ -131,7 +180,10 @@ def run_mlp(iters, warm, shapes=None):
     import torch._dynamo
     from swiglu import gate_up_perm
     F = torch.nn.functional
-    shapes = shapes or [(2048, 4096, 11008), (4096, 4096, 11008), (8192, 4096, 11008)]  # (M, d_model, d_ff)
+    shapes = shapes or [  # (M, d_model, d_ff) -- Llama 1B/7B/13B/70B FFN dims x token-count sweep
+        (256,2048,5632),(512,2048,5632),(1024,2048,5632),(2048,2048,5632),(4096,2048,5632),(8192,2048,5632),(16384,2048,5632),
+        (256,4096,11008),(2048,4096,11008),(4096,4096,11008),(8192,4096,11008),(16384,4096,11008),
+        (2048,5120,13824),(8192,5120,13824),(8192,8192,28672)]
     torch._dynamo.config.cache_size_limit = max(64, 4 * len(shapes))
     rows = []
     for (M, dm, dff) in shapes:
@@ -178,7 +230,10 @@ def run_ffn(iters, warm, shapes=None):
     import torch._dynamo
     from swiglu import gate_up_perm
     F = torch.nn.functional
-    shapes = shapes or [(2048, 4096, 11008), (4096, 4096, 11008), (8192, 4096, 11008)]  # (M, d_model, d_ff)
+    shapes = shapes or [  # (M, d_model, d_ff) -- Llama 1B/7B/13B/70B FFN dims x token-count sweep
+        (256,2048,5632),(512,2048,5632),(1024,2048,5632),(2048,2048,5632),(4096,2048,5632),(8192,2048,5632),(16384,2048,5632),
+        (256,4096,11008),(2048,4096,11008),(4096,4096,11008),(8192,4096,11008),(16384,4096,11008),
+        (2048,5120,13824),(8192,5120,13824),(8192,8192,28672)]
     torch._dynamo.config.cache_size_limit = max(64, 4 * len(shapes))
     rows = []
     for (M, dm, dff) in shapes:
@@ -221,7 +276,11 @@ def run_ce(iters, warm, shapes=None):
     from cross_entropy import make_ce, ce_ref
     import torch._dynamo
     F = torch.nn.functional
-    shapes = shapes or [(2048, 32000, 4096), (4096, 32000, 4096), (8192, 32000, 4096)]  # (M, vocab, d)
+    shapes = shapes or [  # (M, vocab, d) -- Llama vocab (L2 32000 / L3 128256) x d_model 1B/7B/13B/70B x M
+        (256,32000,2048),(2048,32000,2048),(8192,32000,2048),(16384,32000,2048),
+        (256,32000,4096),(2048,32000,4096),(8192,32000,4096),(16384,32000,4096),
+        (2048,128256,4096),(8192,128256,4096),(2048,128256,2048),(8192,128256,2048),
+        (2048,32000,5120),(8192,32000,5120),(8192,32000,8192)]
     torch._dynamo.config.cache_size_limit = max(64, 4 * len(shapes))
     rows = []
     for (M, vocab, d) in shapes:
@@ -232,14 +291,16 @@ def run_ce(iters, warm, shapes=None):
         def _ce(): return F.cross_entropy(h @ W, labels, reduction="none")
         ce_c = torch.compile(_ce, mode="max-autotune-no-cudagraphs", dynamic=False)
         def compiled(i): ce_c()
+        def eager(i):    _ce()
         loss_hk = fwd(h, labels); torch.cuda.synchronize()
         ref = ce_ref(h, W, labels)                                       # fp32 oracle
         rel = (loss_hk.float() - ref).norm().item() / ref.norm().item()
         ce_c(); torch.cuda.synchronize()                                # trigger compile pre-timing
-        t_hk, t_c = _bench(hk, iters, warm), _bench(compiled, iters, warm)
+        t_hk, t_c, t_e = _bench(hk, iters, warm), _bench(compiled, iters, warm), _bench(eager, iters, warm)
         saved = M * vocab * 4 * 2                                        # [M,vocab] fp32 logits write+read
         rows.append({"shape": [M, vocab, d], "hk_ms": round(t_hk, 4), "compile_ms": round(t_c, 4),
-                     "vs_compile": round(t_c / t_hk, 3), "rel": round(rel, 4),
+                     "eager_ms": round(t_e, 4), "vs_compile": round(t_c / t_hk, 3),
+                     "vs_eager": round(t_e / t_hk, 3), "rel": round(rel, 4),
                      "ok": bool(rel < 2e-2), "saved_MB": round(saved / 1e6, 1)})
     return rows
 
@@ -363,10 +424,10 @@ def main():
             out["ffn"].append(r)
             print(f"{str(tuple(r['shape'])):<24}{r['hk_ms']:>9}{r['compile_ms']:>9}{r['eager_ms']:>9}{r['vs_compile']:>9}{r['rel']:>8}{'Y' if r['ok'] else 'N':>4}")
     if a.ce:
-        print(f"\n{'ce (M,vocab,d)':<24}{'hk ms':>9}{'compile':>9}{'vs_comp':>9}{'rel':>8}{'saved MB':>10}{'ok':>4}")
+        print(f"\n{'ce (M,vocab,d)':<24}{'hk ms':>9}{'compile':>9}{'eager':>9}{'vs_comp':>9}{'vs_eag':>8}{'rel':>8}{'saved MB':>10}{'ok':>4}")
         for r in run_ce(a.iters, a.warm):
             out["ce"].append(r)
-            print(f"{str(tuple(r['shape'])):<24}{r['hk_ms']:>9}{r['compile_ms']:>9}{r['vs_compile']:>9}{r['rel']:>8}{r['saved_MB']:>10}{'Y' if r['ok'] else 'N':>4}")
+            print(f"{str(tuple(r['shape'])):<24}{r['hk_ms']:>9}{r['compile_ms']:>9}{r['eager_ms']:>9}{r['vs_compile']:>9}{r['vs_eager']:>8}{r['rel']:>8}{r['saved_MB']:>10}{'Y' if r['ok'] else 'N':>4}")
     if a.forward:
         print("\n" + FWD_CONTRACT)
         for i, dnote in enumerate(FWD_DISCREP, 1):
@@ -379,10 +440,10 @@ def main():
                   f"{r['eager_ms']:>9}{r['vs_compile']:>9}{r['vs_eager']:>8}{r['rel_hk_vs_fp32']:>8}"
                   f"{r['rel_torch_vs_fp32']:>8}{r['rel_hk_vs_torch']:>7}{'Y' if r['ok'] else 'N':>4}")
     if not a.no_chain:
-        print(f"\n{'chain (M,K0,N,P)':<24}{'hk ms':>10}{'torch ms':>10}{'speedup':>9}{'rel':>8}{'ok':>4}")
+        print(f"\n{'chain (M,K0,N,P)':<22}{'hk ms':>9}{'compile':>9}{'eager':>9}{'vs_comp':>9}{'vs_eag':>8}{'rel':>8}{'ok':>4}")
         for r in run_chain(a.iters, a.warm):
             out["chain"].append(r)
-            print(f"{str(tuple(r['shape'])):<24}{r['hk_ms']:>10}{r['torch_ms']:>10}{round(r['torch_ms']/r['hk_ms'],3):>9}{r['rel']:>8}{'Y' if r['ok'] else 'N':>4}")
+            print(f"{str(tuple(r['shape'])):<22}{r['hk_ms']:>9}{r['compile_ms']:>9}{r['eager_ms']:>9}{r['vs_compile']:>9}{r['vs_eager']:>8}{r['rel']:>8}{'Y' if r['ok'] else 'N':>4}")
     if a.json:
         with open(a.json, "w") as f: json.dump(out, f, indent=2)
         print(f"\nwrote {a.json}")
