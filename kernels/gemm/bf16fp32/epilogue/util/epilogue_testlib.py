@@ -11,6 +11,11 @@ Each entry:
   ref(D,out,*args) : the torch reference epilogue -> writes epilogue(D) into `out` (bf16).
                      This ONE function is BOTH the test's correctness oracle AND the bench's
                      unfused second stage, so they can never measure against different math.
+  baseline(D,*args) : FUNCTIONAL (pure; returns a tensor, no in-place / no .item()) bf16 form of the
+                     epilogue. The bench torch.compiles this and times it as the "unfused" stage --
+                     Inductor fuses it to ~1 HBM pass. Distinct from `ref`: reusing the eager fp32
+                     `ref` as the perf baseline materialized fp32 [M,N] temps (~4-5 passes) and
+                     inflated the speedup; this measures only the D round-trip fusion actually saves.
   identity(m,n,k) : args that make the epilogue an identity (== noop), for the bit-exact
                     cross-check; None if the epilogue has no identity case.
   sweep(m,n,k) : list of arg-tuples to sweep in the correctness test (default [args]).
@@ -48,6 +53,7 @@ EPILOGUES = {
         "module": "tk_noop",
         "args":     lambda m, n, k: (),
         "ref":      lambda D, out: out.copy_(D),                 # identity (control)
+        "baseline": lambda D: D.clone(),                        # control: GEMM -> copy
         "identity": None,
         "sweep":    lambda m, n, k: [()],
         "label":    lambda args: "noop",
@@ -57,6 +63,7 @@ EPILOGUES = {
         "module": "tk_scale",
         "args":     lambda m, n, k: (_f32(0.5),),
         "ref":      lambda D, out, alpha: torch.mul(D, alpha.item(), out=out),
+        "baseline": lambda D, alpha: (D.float() * alpha).to(DTYPE),   # functional (no .item()) -> compilable
         "identity": lambda m, n, k: (_f32(1.0),),                # alpha=1 -> == noop
         "sweep":    lambda m, n, k: [(_f32(a),) for a in (0.0, 1.0, -1.0, 0.5, 1e-3, 1e3)],
         "label":    lambda args: f"a={args[0].item():g}",
@@ -66,6 +73,7 @@ EPILOGUES = {
         "module": "tk_rmsnorm_scale",
         "args":     lambda m, n, k: (init_randn((m,)), init_randn((n,))),  # r [1,1,1,M], gamma [1,1,1,N]
         "ref":      lambda D, out, r, gamma: out.copy_((D.float() * r.float().view(-1, 1) * gamma.float().view(1, -1)).to(DTYPE)),
+        "baseline": lambda D, r, gamma: (D.float() * r.float().view(-1, 1) * gamma.float().view(1, -1)).to(DTYPE),
         "identity": lambda m, n, k: (torch.ones((m,), dtype=DTYPE, device="cuda"), torch.ones((n,), dtype=DTYPE, device="cuda")),
         "sweep":    lambda m, n, k: [(init_randn((m,)), init_randn((n,)))],  # random r,gamma direction guard
         "label":    lambda args: "rms+gamma",
@@ -75,6 +83,7 @@ EPILOGUES = {
         "module": "tk_residual_add",
         "args":     lambda m, n, k: (init_randn((m, n)),),
         "ref":      lambda D, out, residual: out.copy_((D.float() + residual.float()).to(DTYPE)),
+        "baseline": lambda D, residual: (D.float() + residual.float()).to(DTYPE),
         "identity": lambda m, n, k: (torch.zeros((m, n), dtype=DTYPE, device="cuda"),),  # residual=0 -> == noop
         "sweep":    lambda m, n, k: [(init_randn((m, n)),)],   # large-magnitude residual is not a viable bf16 test (range, not accumulate)
         "label":    lambda args: "resadd",
@@ -84,6 +93,7 @@ EPILOGUES = {
         "module": "tk_silu",
         "args":     lambda m, n, k: (),
         "ref":      lambda D, out: out.copy_((D.float() * torch.sigmoid(D.float())).to(DTYPE)),
+        "baseline": lambda D: (D.float() * torch.sigmoid(D.float())).to(DTYPE),
         "identity": None,                              # silu has no identity param
         "sweep":    lambda m, n, k: [()],
         "label":    lambda args: "silu",

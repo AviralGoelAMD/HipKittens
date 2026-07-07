@@ -20,6 +20,7 @@ from block_chain import fused_rmsnorm_block, EPS
 
 LLC_BYTES = 256 * 1024 * 1024
 BUDGET    = 8 * 1024**3
+REPEATS   = 1     # --repeats: median over this many independent timing batches (damps per-run jitter)
 SHAPES       = [(2048, 1024, 512), (4096, 4096, 4096), (8192, 8192, 8192)]
 CHAIN_SHAPES = [  # (M,K0,N,P) for out = rmsnorm(X@W0 + res, gamma) @ W1 ; real Llama GEMM-Res-RMSNorm-GEMM boundaries
     # out-proj -> RMSNorm -> gate/up : K0=N=d_model, P=2*d_ff  (1B / 7B / 70B, M-sweep)
@@ -47,43 +48,67 @@ def _pool_size(per_set, llc, budget):
 
 
 def _bench(fn, iters=50, warm=10):
-    """Median per-iteration GPU time over `iters` runs (after `warm` warmups), via CUDA events.
-    Median, not mean, to reject scheduling outliers."""
-    for i in range(warm): fn(i)
-    torch.cuda.synchronize()
-    st = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
-    en = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
-    for i in range(iters): st[i].record(); fn(i); en[i].record()
-    torch.cuda.synchronize()
-    s = sorted(st[i].elapsed_time(en[i]) for i in range(iters))
-    return s[len(s) // 2]
+    """Median per-iteration GPU time over `iters` runs (after `warm` warmups), via CUDA events;
+    median (not mean) rejects scheduling outliers. With REPEATS>1 (--repeats) returns the median of
+    REPEATS independent median-batches -- damps per-run timing jitter. NOTE: within ONE process the
+    torch.compile autotune CHOICE is fixed once compiled, so --repeats does NOT average the
+    hipBLASLt-mm / Triton flip-flop; run the whole bench in a few processes and take the per-cell
+    median for that (the measurement-noise caveat)."""
+    meds = []
+    for _ in range(max(1, REPEATS)):
+        for i in range(warm): fn(i)
+        torch.cuda.synchronize()
+        st = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
+        en = [torch.cuda.Event(enable_timing=True) for _ in range(iters)]
+        for i in range(iters): st[i].record(); fn(i); en[i].record()
+        torch.cuda.synchronize()
+        s = sorted(st[i].elapsed_time(en[i]) for i in range(iters))
+        meds.append(s[len(s) // 2])
+    meds.sort()
+    return meds[len(meds) // 2]
+
+
+def bench_case(kernel, shape, fused, baseline, correct, saved_bytes, iters, warm):
+    """Standard fused-vs-baseline row. `fused`/`baseline`: callables(i)->timed work; `correct`: ()->bool.
+    `baseline` is the LEAN bf16 (compiled / single-pass) unfused stage -- NOT the fp32 correctness
+    `ref` (see epilogue_testlib `baseline` vs `ref`). Reusing the eager fp32 ref here materialized
+    fp32 [M,N] temps (~4-5 HBM passes) and inflated the win; this times the ~1-pass baseline, so
+    `speedup` reflects only the D round-trip fusion actually removes."""
+    ok = correct()
+    tf = _bench(fused, iters, warm)
+    tb = _bench(baseline, iters, warm)
+    return {"kernel": kernel, "shape": list(shape), "correct": bool(ok),
+            "fused_ms": round(tf, 4), "torch_ms": round(tb, 4),
+            "speedup": round(tb / tf, 3), "saved_MB": round(saved_bytes / 1e6, 1)}
 
 
 def run_epilogue(kernel, iters, warm):
+    import torch._dynamo
+    torch._dynamo.config.cache_size_limit = max(64, 4 * len(SHAPES))
     base = importlib.import_module("tk_noop")
     spec = EPILOGUES[kernel]
     fk = importlib.import_module(spec["module"])
+    bfn = torch.compile(spec["baseline"], mode="max-autotune-no-cudagraphs", dynamic=False)  # lean bf16 baseline
     rows = []
     for (m, n, k) in SHAPES:
         per_set = (m * k + n * k) * DSIZE
         N = _pool_size(per_set, LLC_BYTES, BUDGET)
         Ap, Btp = zip(*[make_inputs(m, n, k) for _ in range(N)])   # cold-cache pool; rotate via [i % N]
         D = init_empty((m, n)); O = init_empty((m, n)); args = spec["args"](m, n, k)
-        def fused(i):   fk.dispatch(Ap[i % N], Btp[i % N], O, *args)
-        def unfused(i):
-            base.dispatch(Ap[i % N], Btp[i % N], D); spec["ref"](D, O, *args)
-        fused(0); torch.cuda.synchronize(); Of = O.clone()
-        unfused(0); torch.cuda.synchronize()
-        ok = torch.allclose(Of.float(), O.float(), rtol=RTOL, atol=ATOL)
-        tf, tu = _bench(fused, iters, warm), _bench(unfused, iters, warm)
+        def fused(i):    fk.dispatch(Ap[i % N], Btp[i % N], O, *args)
+        def baseline(i): base.dispatch(Ap[i % N], Btp[i % N], D); bfn(D, *args)   # GEMM -> compiled bf16 epilogue
+        def corrAreect():
+            fused(0); torch.cuda.synchronize(); Of = O.clone()                    # fused output
+            base.dispatch(Ap[0], Btp[0], D); spec["ref"](D, O, *args)             # fp32 oracle into O
+            torch.cuda.synchronize()
+            return torch.allclose(Of.float(), O.float(), rtol=RTOL, atol=ATOL)
+        baseline(0); torch.cuda.synchronize()                                     # warm the compile OUTSIDE timing
         saved = spec["hbm_passes"] * m * n * DSIZE
-        rows.append({"kernel": kernel, "shape": [m, n, k], "correct": bool(ok),
-                     "fused_ms": round(tf, 4), "torch_ms": round(tu, 4),
-                     "speedup": round(tu / tf, 3), "saved_MB": round(saved / 1e6, 1)})
+        rows.append(bench_case(kernel, [m, n, k], fused, baseline, correct, saved, iters, warm))
     return rows
 
 
-def run_chain(iters, warm):
+def run_rmsnorm_sublayer(iters, warm):
     """GEMM-Residual-RMSNorm-GEMM chain vs torch.compile (max-autotune) + eager, cold-cache pool.
     HK path calls the 3 kernels DIRECTLY with weights transposed ONCE and buffers pre-allocated (a
     real hot loop). The one-shot block wrapper (fused_rmsnorm_block) would re-transpose BOTH weights
@@ -158,14 +183,12 @@ def run_swiglu(iters, warm, shapes=None):
         Wt_nat = W.to(device="cuda", dtype=DTYPE).t().contiguous()   # natural weight for the noop GEMM
         D = init_empty((m, 2 * d_ff))
         def fused(i):  fwd(X)
-        def unfused(i):
+        def baseline(i):
             tk_noop.dispatch(X, Wt_nat, D)
-            torch.nn.functional.silu(D[:, :d_ff]) * D[:, d_ff:]
-        ok = torch.allclose(fwd(X).float(), swiglu_ref(X, W), rtol=RTOL, atol=ATOL)
-        tf, tu = _bench(fused, iters, warm), _bench(unfused, iters, warm)
+            torch.nn.functional.silu(D[:, :d_ff]) * D[:, d_ff:]      # lean bf16 single-pass (eager, already fair)
+        def correct(): return torch.allclose(fwd(X).float(), swiglu_ref(X, W), rtol=RTOL, atol=ATOL)
         saved = 4 * m * d_ff * DSIZE                 # fusion skips the write+read of the [M,2*d_ff] intermediate
-        rows.append({"shape": [m, d_ff, k], "fused_ms": round(tf, 4), "torch_ms": round(tu, 4),
-                     "speedup": round(tu / tf, 3), "saved_MB": round(saved / 1e6, 1), "ok": bool(ok)})
+        rows.append(bench_case("swiglu", [m, d_ff, k], fused, baseline, correct, saved, iters, warm))
     return rows
 
 def run_mlp(iters, warm, shapes=None):
@@ -399,7 +422,9 @@ def main():
     ap.add_argument("--ce", action="store_true")
     ap.add_argument("--forward", action="store_true")
     ap.add_argument("--json", default=None)
+    ap.add_argument("--repeats", type=int, default=1, help="median over N independent timing batches (jitter); run the process K times for autotune-choice variance")
     a = ap.parse_args()
+    global REPEATS; REPEATS = a.repeats
 
     out = {"epilogues": [], "swiglu": [], "mlp": [], "ffn": [], "ce": [], "forward": [], "chain": []}
     if not a.no_epilogue:
@@ -412,7 +437,7 @@ def main():
         print(f"\n{'swiglu (M,d_ff,K)':<24}{'fused ms':>10}{'torch ms':>10}{'speedup':>9}{'saved MB':>10}{'ok':>4}")
         for r in run_swiglu(a.iters, a.warm):
             out["swiglu"].append(r)
-            print(f"{str(tuple(r['shape'])):<24}{r['fused_ms']:>10}{r['torch_ms']:>10}{r['speedup']:>9}{r['saved_MB']:>10}{'Y' if r['ok'] else 'N':>4}")
+            print(f"{str(tuple(r['shape'])):<24}{r['fused_ms']:>10}{r['torch_ms']:>10}{r['speedup']:>9}{r['saved_MB']:>10}{'Y' if r['correct'] else 'N':>4}")
     if a.mlp:
         print(f"\n{'mlp (M,d_model,d_ff)':<24}{'hk ms':>9}{'compile':>9}{'eager':>9}{'vendor2':>9}{'hk2':>9}{'vs_comp':>9}{'rel':>8}{'ok':>4}")
         for r in run_mlp(a.iters, a.warm):
@@ -441,7 +466,7 @@ def main():
                   f"{r['rel_torch_vs_fp32']:>8}{r['rel_hk_vs_torch']:>7}{'Y' if r['ok'] else 'N':>4}")
     if not a.no_chain:
         print(f"\n{'chain (M,K0,N,P)':<22}{'hk ms':>9}{'compile':>9}{'eager':>9}{'vs_comp':>9}{'vs_eag':>8}{'rel':>8}{'ok':>4}")
-        for r in run_chain(a.iters, a.warm):
+        for r in run_rmsnorm_sublayer(a.iters, a.warm):
             out["chain"].append(r)
             print(f"{str(tuple(r['shape'])):<22}{r['hk_ms']:>9}{r['compile_ms']:>9}{r['eager_ms']:>9}{r['vs_compile']:>9}{r['vs_eager']:>8}{r['rel']:>8}{'Y' if r['ok'] else 'N':>4}")
     if a.json:
