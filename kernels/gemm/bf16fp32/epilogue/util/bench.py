@@ -97,7 +97,7 @@ def run_epilogue(kernel, iters, warm):
         D = init_empty((m, n)); O = init_empty((m, n)); args = spec["args"](m, n, k)
         def fused(i):    fk.dispatch(Ap[i % N], Btp[i % N], O, *args)
         def baseline(i): base.dispatch(Ap[i % N], Btp[i % N], D); bfn(D, *args)   # GEMM -> compiled bf16 epilogue
-        def corrAreect():
+        def correct():
             fused(0); torch.cuda.synchronize(); Of = O.clone()                    # fused output
             base.dispatch(Ap[0], Btp[0], D); spec["ref"](D, O, *args)             # fp32 oracle into O
             torch.cuda.synchronize()
