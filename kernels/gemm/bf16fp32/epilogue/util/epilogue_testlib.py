@@ -8,6 +8,8 @@ Self-contained (no external deps beyond torch) so it can ship in the repo.
 Each entry:
   module      : the built pybind module name, "tk_<k>"
   args(m,n,k) : tuple of dispatch extra-args (also passed to ref); the default config
+  arg_names   : names of the extra dispatch args in binding order -- drives hk.matmul's keyword
+                args + hk.available(); [] for none. MUST match `args`'s tuple order and the binding.
   ref(D,out,*args) : the torch reference epilogue -> writes epilogue(D) into `out` (bf16).
                      This ONE function is BOTH the test's correctness oracle AND the bench's
                      unfused second stage, so they can never measure against different math.
@@ -52,6 +54,7 @@ EPILOGUES = {
     "noop": {
         "module": "tk_noop",
         "args":     lambda m, n, k: (),
+        "arg_names": [],
         "ref":      lambda D, out: out.copy_(D),                 # identity (control)
         "baseline": lambda D: D.clone(),                        # control: GEMM -> copy
         "identity": None,
@@ -62,6 +65,7 @@ EPILOGUES = {
     "scale": {
         "module": "tk_scale",
         "args":     lambda m, n, k: (_f32(0.5),),
+        "arg_names": ["alpha"],
         "ref":      lambda D, out, alpha: torch.mul(D, alpha.item(), out=out),
         "baseline": lambda D, alpha: (D.float() * alpha).to(DTYPE),   # functional (no .item()) -> compilable
         "identity": lambda m, n, k: (_f32(1.0),),                # alpha=1 -> == noop
@@ -72,6 +76,7 @@ EPILOGUES = {
     "rmsnorm_scale": {  # RMSNorm scale: precomputed per-row r + per-feature gamma
         "module": "tk_rmsnorm_scale",
         "args":     lambda m, n, k: (init_randn((m,)), init_randn((n,))),  # r [1,1,1,M], gamma [1,1,1,N]
+        "arg_names": ["r", "gamma"],
         "ref":      lambda D, out, r, gamma: out.copy_((D.float() * r.float().view(-1, 1) * gamma.float().view(1, -1)).to(DTYPE)),
         "baseline": lambda D, r, gamma: (D.float() * r.float().view(-1, 1) * gamma.float().view(1, -1)).to(DTYPE),
         "identity": lambda m, n, k: (torch.ones((m,), dtype=DTYPE, device="cuda"), torch.ones((n,), dtype=DTYPE, device="cuda")),
@@ -82,6 +87,7 @@ EPILOGUES = {
     "residual_add": {  # residual add  out = (A@B) + residual  ([M,N] skip connection)
         "module": "tk_residual_add",
         "args":     lambda m, n, k: (init_randn((m, n)),),
+        "arg_names": ["residual"],
         "ref":      lambda D, out, residual: out.copy_((D.float() + residual.float()).to(DTYPE)),
         "baseline": lambda D, residual: (D.float() + residual.float()).to(DTYPE),
         "identity": lambda m, n, k: (torch.zeros((m, n), dtype=DTYPE, device="cuda"),),  # residual=0 -> == noop
@@ -92,6 +98,7 @@ EPILOGUES = {
     "silu": {  # SiLU activation  out = silu(A@B) = x * sigmoid(x)
         "module": "tk_silu",
         "args":     lambda m, n, k: (),
+        "arg_names": [],
         "ref":      lambda D, out: out.copy_((D.float() * torch.sigmoid(D.float())).to(DTYPE)),
         "baseline": lambda D: (D.float() * torch.sigmoid(D.float())).to(DTYPE),
         "identity": None,                              # silu has no identity param
@@ -101,6 +108,7 @@ EPILOGUES = {
     },
     "swiglu": {  # SwiGLU (dim-reducing):  out = silu(gate) * value,  [M, 2*d_ff] -> [M, d_ff]
         "module": "tk_swiglu",
+        "arg_names": [],
         "out_shape": lambda m, n, k: (m, n // 2),   # n = 2*d_ff GEMM width -> d_ff output
         "weight_perm": lambda n: gate_up_perm(n // 2),  # permute the 2*d_ff weight columns (n = weight width)
         "hbm_passes": 2,

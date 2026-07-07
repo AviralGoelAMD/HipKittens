@@ -392,7 +392,7 @@ def test_ce_padded_vocab():
 
 def test_binding_arity():
     """Review #4: each binding's dispatch arity must equal its registry args entry. The positional
-    order must agree across three places (bind_function list, registry args lambda, hk.run *extra);
+    order must agree across three places (bind_function list, registry args/arg_names, hk.matmul keyword args);
     an arity desync there compiles+runs and returns garbage. py::bind_function emits
     'dispatch(arg0: object, ...) -> None', so we parse the arity and compare to 3 (a,b,c) + len(extra)."""
     import re
@@ -409,7 +409,18 @@ def test_binding_arity():
         expect = 3 + (len(spec["args"](256, 512, 256)) if "args" in spec else 0)
         ok &= _p(f"binding arity {name}", got == expect,
                  f"binding={got} registry={expect}" + ("" if got is not None else f"  unparsed:{doc[:48]!r}"))
-    for modname, expect in [("tk_cross_entropy", 5), ("tk_ce_rms", 6)]:   # partials-only: a,b,max,sumexp,valid_n[,r]
+        argn = spec.get("arg_names")                        # arg_names must not drift from args (count)
+        if argn is not None:
+            want = len(spec["args"](256, 512, 256)) if "args" in spec else 0
+            ok &= _p(f"arg_names arity {name}", len(argn) == want, f"arg_names={len(argn)} args={want}")
+    for modname, expect in [   # non-registry dispatch bindings: arity checked against the C++ bind_function list
+            ("tk_cross_entropy", 5),          # a,b,max_buf,sumexp_buf,valid_n
+            ("tk_ce_rms", 6),                 # a,b,max_buf,sumexp_buf,valid_n,r
+            ("tk_partialrms", 3),             # a,b,partials
+            ("tk_rope", 4),                   # a,b,c,cos_sin
+            ("tk_rmsnorm_swiglu", 4),         # a,b,c,r
+            ("tk_rmsnorm_rope", 5),           # a,b,c,r,cos_sin
+            ("tk_residual_rms_partials", 7)]: # a,b,c,residual,gamma,partials,save
         got, doc = arity(modname)
         ok &= _p(f"binding arity {modname}", got == expect, f"binding={got} expected={expect}")
     return ok
@@ -424,13 +435,13 @@ def test_known_answer():
     sig1 = 1.0 / (1.0 + math.exp(-1.0))                      # sigmoid(1)
     A  = torch.ones(M, K, device="cuda", dtype=DTYPE)
     Bc = torch.full((K, N), 1.0 / K, device="cuda", dtype=DTYPE)   # A@Bc == 1 everywhere
-    osi = hk.run("silu", A, Bc)
+    osi = hk.matmul(A, Bc, epilogue="silu")
     ok = _p("known-answer silu(1)=sigmoid(1)", torch.allclose(osi.float(), torch.full_like(osi.float(), sig1), atol=2e-2),
             f"got={osi.float().mean().item():.4f} want={sig1:.4f}")
     d_ff = N // 2                                            # swiglu: gate=1, value=2 (distinct => a swap shows)
     Bsw = torch.empty(K, N, device="cuda", dtype=DTYPE)
     Bsw[:, :d_ff] = 1.0 / K; Bsw[:, d_ff:] = 2.0 / K        # natural [gate | value]; hk permutes internally
-    osw = hk.run("swiglu", A, Bsw); want_sw = sig1 * 2.0     # silu(1)*2, NOT silu(2)*1
+    osw = hk.matmul(A, Bsw, epilogue="swiglu"); want_sw = sig1 * 2.0     # silu(1)*2, NOT silu(2)*1
     ok &= _p("known-answer swiglu silu(1)*2", torch.allclose(osw.float(), torch.full_like(osw.float(), want_sw), atol=3e-2),
              f"got={osw.float().mean().item():.4f} want={want_sw:.4f}")
     h = torch.ones(M, K, device="cuda", dtype=DTYPE)         # ce: uniform logits => loss == log(vocab)
@@ -442,9 +453,10 @@ def test_known_answer():
 
 
 def test_hk_run():
-    """Review #5: drive every registered epilogue through hk.run (the user-facing entry) so its
+    """Review #5: drive every registered epilogue through hk.matmul (the user-facing entry) so its
     coercion / transpose / out_shape / weight_perm paths actually run (the rest of the suite calls
-    mod.dispatch directly). Scalar fp32 args go in as plain floats (hk.run's float->fp32 path)."""
+    mod.dispatch directly). Extra inputs go through the registry-named keyword args; scalar fp32 args
+    go in as plain floats (hk's float->fp32 path)."""
     import hk
     from swiglu import swiglu_ref
     M, N, K = 512, 512, 256
@@ -452,18 +464,20 @@ def test_hk_run():
     for name, spec in sorted(EPILOGUES.items()):
         A = init_randn((M, K)); B = init_randn((K, N))
         reg_extra = spec["args"](M, N, K) if "args" in spec else ()
-        hk_extra = tuple(float(x.reshape(-1)[0].item()) if (torch.is_tensor(x) and x.numel() == 1) else x
-                         for x in reg_extra)                  # scale's alpha: fp32 tensor -> float for hk.run
-        out = hk.run(name, A, B, *hk_extra)
+        argn = spec.get("arg_names", [])
+        eargs = {n: (float(x.reshape(-1)[0].item()) if (torch.is_tensor(x) and x.numel() == 1) else x)
+                 for n, x in zip(argn, reg_extra)}          # scale's alpha: fp32 tensor -> float for hk
+        epi = None if name == "noop" else name
+        out = hk.matmul(A, B, epilogue=epi, **eargs)
         if "ref" in spec:
-            D = hk.run("noop", A, B)                          # the bf16 kernel GEMM == the base the epilogue sees
+            D = hk.matmul(A, B)                              # plain GEMM == the base the epilogue sees
             exp = torch.empty_like(out)
             spec["ref"](D, exp, *reg_extra)
             ref = exp.float()
         else:                                                # swiglu has no registry ref
             ref = swiglu_ref(A, B)
         e = (out.float() - ref).abs().max().item()
-        ok &= _p(f"hk.run {name}", torch.allclose(out.float(), ref, rtol=RTOL, atol=ATOL), f"max_err={e:.3g}")
+        ok &= _p(f"hk.matmul {name}", torch.allclose(out.float(), ref, rtol=RTOL, atol=ATOL), f"max_err={e:.3g}")
     return ok
 
 
@@ -497,7 +511,7 @@ def main():
         ("[ce padded vocab]",     test_ce_padded_vocab,  ()),
         ("[binding arity]",       test_binding_arity,    ()),
         ("[known answer]",        test_known_answer,     ()),
-        ("[hk.run coverage]",     test_hk_run,           ()),
+        ("[hk.matmul coverage]",  test_hk_run,           ()),
     ]
     allpass = True
     for label, fn, fargs in suite:
