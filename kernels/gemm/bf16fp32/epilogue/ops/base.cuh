@@ -4,7 +4,11 @@ using namespace kittens;
 // Coordinate helper: the four {row,col} subtile coordinates an 8-warp block's accumulator
 // fans out to. Single source for the tile<->global mapping; every store/load/reduce op in ops/
 // derives its coords from it, so a layout change is one edit and they cannot drift.
-// The two row / two col sub-tile origins of the FIXED 2x2 fan-out (length-2, indexed [0]/[1] by every consumer).
+// FIXED 2x2 register-accumulator fan-out, committed to 2x2. SUBTILES_PER_DIM (epilogue_args.cuh) is
+// defined = 2, static_assert(SUBTILES_PER_DIM==2)'d, and used as the SINGLE named source for the
+// fan-out dimension everywhere (this struct + the block_coords stride below) -- a guarded constant,
+// NOT a runtime tunable. The 2x2 is real: the accumulator is a hardwired rt_fl<...>[2][2] and every
+// consumer writes C[0][0]..C[1][1] explicitly; the static_assert ties them together so they cannot drift.
 struct subtile_coords { int m[SUBTILES_PER_DIM]; int n[SUBTILES_PER_DIM]; };
 __device__ inline subtile_coords block_coords(int row,int col,int wr,int wc){
     return { {(row*SUBTILES_PER_DIM)*WARPS_M+wr, (row*SUBTILES_PER_DIM)*WARPS_M+WARPS_M+wr},
