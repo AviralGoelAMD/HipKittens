@@ -41,10 +41,27 @@ import tk_residual_rms_partials, tk_rms_reduce, tk_rmsnorm_scale
 from swiglu import make_rmsnorm_swiglu, rmsnorm_swiglu_ref
 from rope import make_rmsnorm_rope, rmsnorm_rope_ref, make_cos_sin, rope_perm
 
-# the GQA causal attention kernel (PYBIND11_MODULE(tk_kernel)) lives in kernels/attn/gqa_causal
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                "..", "..", "..", "..", "attn", "gqa_causal"))
-import tk_kernel as tk_gqa
+# The GQA causal attention kernel is a SEPARATE build that also names its pybind module
+# "tk_kernel" -- the same name the base GEMM uses. Import it by explicit file path, never by
+# name: a plain `import tk_kernel` silently resolves to whichever tk_kernel*.so is found first,
+# so a missing attention build becomes a wrong-kernel call (5 args into a 3-arg dispatch) with
+# a 400-line pybind argument dump instead of an error. Build it with:
+#   make -C kernels/attn/gqa_causal GPU_TARGET=CDNA4 ATTN_B=1 ATTN_H=<d/128> ATTN_H_KV=<H_KV> \
+#        ATTN_N=<M> ATTN_D=128
+import glob, importlib.util
+_GQA_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                        "..", "..", "..", "..", "attn", "gqa_causal")
+_GQA_SO = sorted(glob.glob(os.path.join(_GQA_DIR, "tk_kernel*.so")))
+if not _GQA_SO:
+    raise ImportError(
+        f"gqa_causal attention kernel not built in {os.path.normpath(_GQA_DIR)}. "
+        "The forward layer needs it compiled at THIS benchmark's shape; see the make line above.")
+# The spec name MUST be "tk_kernel": a C extension's init symbol is PyInit_<module name>, and this
+# .so was built by PYBIND11_MODULE(tk_kernel). module_from_spec/exec_module do NOT touch sys.modules,
+# so loading it here does not collide with the base GEMM's own tk_kernel import elsewhere.
+_spec = importlib.util.spec_from_file_location("tk_kernel", _GQA_SO[0])
+tk_gqa = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(tk_gqa)
 
 DTYPE = torch.bfloat16
 EPS = 1e-5
