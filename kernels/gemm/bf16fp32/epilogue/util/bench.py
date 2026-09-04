@@ -68,6 +68,66 @@ def _bench(fn, iters=50, warm=10):
     return meds[len(meds) // 2]
 
 
+# Baselines are timed under every mode listed here and the FASTEST is reported, so HK is always
+# compared against torch at its strongest.
+#
+# CUDA GRAPHS ARE DELIBERATELY NOT IN THIS LIST. Measured on gfx950 (jobs 223 / 235):
+#   * both sides are KERNEL-bound, not launch-bound -- the CPU issues work ~4x faster than the GPU
+#     consumes it (host/device 0.05-0.23), so there is no launch overhead for a graph to remove;
+#   * capturing BOTH sides made both marginally SLOWER (HK 0.96-0.99x, torch 0.89-0.99x);
+#   * the graphed and ungraphed ratios agree at every shape (0.44/0.41, 0.82/0.79, 1.10/1.10,
+#     0.60/0.60, 1.12/1.13) -- there is ONE ceiling, and this lane already measures it;
+#   * and against this harness's cache-cold rotating pool a graph must copy each new input into
+#     its static buffers, which is an artifact this benchmark invents and deployment never pays.
+# Re-enable with --compile-modes if you ever need it; util/bench_graphed.py holds the evidence.
+COMPILE_MODES = ["max-autotune-no-cudagraphs"]
+
+
+def _best_compiled(build, iters, warm):
+    """`build(mode) -> (callable(i), warmup_thunk)`. Compiles+times under every COMPILE_MODES entry
+    and returns (best_callable, best_ms, best_mode, {mode: ms}). A mode that fails to compile or run
+    (CUDA-graph capture can reject a pattern) is recorded as None and skipped, never fatal."""
+    per, best = {}, None
+    for mode in COMPILE_MODES:
+        try:
+            fn, warmup = build(mode)
+            warmup()                      # compile + capture OUTSIDE the timed region
+            torch.cuda.synchronize()
+            ms = _bench(fn, iters, warm)
+        except Exception as e:            # noqa: BLE001 - a mode that cannot run is data, not a crash
+            per[mode] = None
+            print(f"    [compile-mode {mode}: unavailable -- {type(e).__name__}: {e}]", file=sys.stderr)
+            continue
+        per[mode] = round(ms, 4)
+        if best is None or ms < best[1]:
+            best = (fn, ms, mode)
+    if best is None:
+        raise RuntimeError(f"no usable compile mode among {COMPILE_MODES}")
+    return best[0], best[1], best[2], per
+
+
+def _best_mode_fn(compile_fn, call, iters, warm):
+    """Same idea as `_best_compiled` for the chain benches that need the compiled OBJECT back too.
+    `compile_fn(mode) -> compiled`; `call(compiled) -> closure(i)`. Returns
+    (closure, ms, mode, compiled_obj, {mode: ms}) for the FASTEST mode."""
+    per, best = {}, None
+    for mode in COMPILE_MODES:
+        try:
+            c = compile_fn(mode)
+            fn = call(c)
+            fn(0); torch.cuda.synchronize()          # compile + graph capture OUTSIDE timing
+            ms = _bench(fn, iters, warm)
+        except Exception as e:                        # noqa: BLE001
+            per[mode] = None
+            print(f"    [compile-mode {mode}: unavailable -- {type(e).__name__}]", file=sys.stderr)
+            continue
+        per[mode] = round(ms, 4)
+        if best is None or ms < best[1]:
+            best = (fn, ms, mode, c)
+    if best is None:
+        raise RuntimeError(f"no usable compile mode among {COMPILE_MODES}")
+    return best[0], best[1], best[2], best[3], per
+
 def bench_case(kernel, shape, fused, baseline, correct, saved_bytes, iters, warm):
     """Standard fused-vs-baseline row. `fused`/`baseline`: callables(i)->timed work; `correct`: ()->bool.
     `baseline` is the LEAN bf16 (compiled / single-pass) unfused stage -- NOT the fp32 correctness
@@ -84,11 +144,10 @@ def bench_case(kernel, shape, fused, baseline, correct, saved_bytes, iters, warm
 
 def run_epilogue(kernel, iters, warm):
     import torch._dynamo
-    torch._dynamo.config.cache_size_limit = max(64, 4 * len(SHAPES))
+    torch._dynamo.config.cache_size_limit = max(64, 8 * len(SHAPES) * len(COMPILE_MODES))
     base = importlib.import_module("tk_noop")
     spec = EPILOGUES[kernel]
     fk = importlib.import_module(spec["module"])
-    bfn = torch.compile(spec["baseline"], mode="max-autotune-no-cudagraphs", dynamic=False)  # lean bf16 baseline
     rows = []
     for (m, n, k) in SHAPES:
         per_set = (m * k + n * k) * DSIZE
@@ -96,15 +155,30 @@ def run_epilogue(kernel, iters, warm):
         Ap, Btp = zip(*[make_inputs(m, n, k) for _ in range(N)])   # cold-cache pool; rotate via [i % N]
         D = init_empty((m, n)); O = init_empty((m, n)); args = spec["args"](m, n, k)
         def fused(i):    fk.dispatch(Ap[i % N], Btp[i % N], O, *args)
-        def baseline(i): base.dispatch(Ap[i % N], Btp[i % N], D); bfn(D, *args)   # GEMM -> compiled bf16 epilogue
         def correct():
             fused(0); torch.cuda.synchronize(); Of = O.clone()                    # fused output
             base.dispatch(Ap[0], Btp[0], D); spec["ref"](D, O, *args)             # fp32 oracle into O
             torch.cuda.synchronize()
             return torch.allclose(Of.float(), O.float(), rtol=RTOL, atol=ATOL)
-        baseline(0); torch.cuda.synchronize()                                     # warm the compile OUTSIDE timing
+        # Strongest baseline: GEMM -> compiled bf16 epilogue, timed under every compile mode.
+        def build(mode):
+            bfn = torch.compile(spec["baseline"], mode=mode, dynamic=False)
+            def baseline(i): base.dispatch(Ap[i % N], Btp[i % N], D); bfn(D, *args)
+            return baseline, (lambda: baseline(0))
+        baseline, tb, best_mode, per_mode = _best_compiled(build, iters, warm)
+        # eager (uncompiled) is also a legitimate baseline -- keep it if it beats every compiled mode
+        def eager(i): base.dispatch(Ap[i % N], Btp[i % N], D); spec["baseline"](D, *args)
+        eager(0); torch.cuda.synchronize()
+        te = _bench(eager, iters, warm)
+        per_mode["eager"] = round(te, 4)
+        if te < tb: baseline, tb, best_mode = eager, te, "eager"
         saved = spec["hbm_passes"] * m * n * DSIZE
-        rows.append(bench_case(kernel, [m, n, k], fused, baseline, correct, saved, iters, warm))
+        ok = correct()
+        tf = _bench(fused, iters, warm)
+        rows.append({"kernel": kernel, "shape": [m, n, k], "correct": bool(ok),
+                     "fused_ms": round(tf, 4), "torch_ms": round(tb, 4),
+                     "speedup": round(tb / tf, 3), "saved_MB": round(saved / 1e6, 1),
+                     "baseline_mode": best_mode, "baseline_per_mode": per_mode})
     return rows
 
 
@@ -146,9 +220,14 @@ def run_rmsnorm_sublayer(iters, warm):
             var = h1.float().pow(2).mean(-1, keepdim=True)            # fp32 RMS reduction (as HK)
             hn = (h1 * torch.rsqrt(var + EPS) * gamma.float()).to(DTYPE)
             return hn @ W1                                            # bf16 GEMM
-        chain_c = torch.compile(_chain, mode="max-autotune-no-cudagraphs", dynamic=False)
+        # Strongest torch baseline: compile the SAME chain fn under every mode, keep the fastest.
+        def build(mode, _c=_chain):
+            cc = torch.compile(_c, mode=mode, dynamic=False)
+            def run(i): X, W0, res, g, W1, *_ = pool[i % NP]; cc(X, W0, res, g, W1)
+            return run, (lambda: run(0))
+        compiled, t_c, best_mode, per_mode = _best_compiled(build, iters, warm)
+        chain_c = torch.compile(_chain, mode=best_mode, dynamic=False)   # same-mode fn for the correctness gate
         def eager(i):    X, W0, res, g, W1, *_ = pool[i % NP]; _chain(X, W0, res, g, W1)
-        def compiled(i): X, W0, res, g, W1, *_ = pool[i % NP]; chain_c(X, W0, res, g, W1)
         # correctness + compile-warm (OUTSIDE timed loop): gate HK AND compiled vs the fp32 oracle
         X, W0, res, g, W1, W0t, W1t, (c, save, partials, r, out) = pool[0]
         tk_residual_rms_partials.dispatch(X, W0t, c, res, g, partials, save)
@@ -160,10 +239,13 @@ def run_rmsnorm_sublayer(iters, warm):
         ref = (h1f * torch.rsqrt(h1f.pow(2).mean(-1, keepdim=True) + EPS) * g.float()) @ W1.float()
         rel_hk = (out.float() - ref).norm().item() / ref.norm().item()
         rel_c = (out_c.float() - ref).norm().item() / ref.norm().item()
-        t_hk, t_c, t_e = _bench(hk, iters, warm), _bench(compiled, iters, warm), _bench(eager, iters, warm)
+        t_hk, t_e = _bench(hk, iters, warm), _bench(eager, iters, warm)
+        per_mode["eager"] = round(t_e, 4)
         rows.append({"shape": [M, K0, N, P], "pool": NP,
                      "hk_ms": round(t_hk, 4), "compile_ms": round(t_c, 4), "eager_ms": round(t_e, 4),
                      "vs_compile": round(t_c / t_hk, 3), "vs_eager": round(t_e / t_hk, 3),
+                     "vs_best": round(min(t_c, t_e) / t_hk, 3),
+                     "baseline_mode": best_mode, "baseline_per_mode": per_mode,
                      "rel": round(rel_hk, 4), "rel_compile": round(rel_c, 4),
                      "ok": bool(rel_hk < CHAIN_REL and rel_c < CHAIN_REL)})
     return rows
@@ -221,8 +303,9 @@ def run_mlp(iters, warm, shapes=None):
         def _mlp(h, Wgu, Wd, x):
             gu = h @ Wgu
             return x + (F.silu(gu[:, :dff]) * gu[:, dff:]) @ Wd
-        mlp_c = torch.compile(_mlp, mode="max-autotune-no-cudagraphs", dynamic=False)
-        def compiled(i): mlp_c(h, Wgu, Wd, x)
+        compiled, t_c, best_mode, mlp_c, per_mode = _best_mode_fn(
+            lambda m: torch.compile(_mlp, mode=m, dynamic=False),
+            lambda c: (lambda i: c(h, Wgu, Wd, x)), iters, warm)
         def eager(i):    _mlp(h, Wgu, Wd, x)
         a_dummy = init_randn((M, dff)); Wgu_t = Wgu.t().contiguous()
         D1 = init_empty((M, 2 * dff)); D2 = init_empty((M, dm))
@@ -234,11 +317,14 @@ def run_mlp(iters, warm, shapes=None):
         ref = x.float() + (F.silu(gu[:, :dff]) * gu[:, dff:]) @ Wd.float()
         rel = (y_hk.float() - ref).norm().item() / ref.norm().item()
         mlp_c(h, Wgu, Wd, x); torch.cuda.synchronize()                      # trigger compile pre-timing
-        t_hk, t_c = _bench(hk, iters, warm), _bench(compiled, iters, warm)
+        t_hk = _bench(hk, iters, warm)
         t_e, t_v, t_h2 = _bench(eager, iters, warm), _bench(vendor2, iters, warm), _bench(hk2, iters, warm)
+        per_mode["eager"] = round(t_e, 4)
         rows.append({"shape": [M, dm, dff], "hk_ms": round(t_hk, 4), "compile_ms": round(t_c, 4),
                      "eager_ms": round(t_e, 4), "vendor2_ms": round(t_v, 4), "hk2_ms": round(t_h2, 4),
-                     "vs_compile": round(t_c / t_hk, 3), "rel": round(rel, 4), "ok": bool(rel < 2e-2)})
+                     "vs_compile": round(t_c / t_hk, 3), "vs_best": round(min(t_c, t_e) / t_hk, 3),
+                     "baseline_mode": best_mode, "baseline_per_mode": per_mode,
+                     "rel": round(rel, 4), "ok": bool(rel < 2e-2)})
     return rows
 
 
@@ -274,8 +360,9 @@ def run_ffn(iters, warm, shapes=None):
             n = h * torch.rsqrt(h.pow(2).mean(-1, keepdim=True) + EPS) * gamma
             gu = n @ Wgu
             return x + (F.silu(gu[:, :dff]) * gu[:, dff:]) @ Wd
-        ffn_c = torch.compile(_ffn, mode="max-autotune-no-cudagraphs", dynamic=False)
-        def compiled(i): ffn_c(h, gamma, Wgu, Wd, x)
+        compiled, t_c, best_mode, ffn_c, per_mode = _best_mode_fn(
+            lambda m: torch.compile(_ffn, mode=m, dynamic=False),
+            lambda c: (lambda i: c(h, gamma, Wgu, Wd, x)), iters, warm)
         def eager(i):    _ffn(h, gamma, Wgu, Wd, x)
         hk(0); torch.cuda.synchronize()
         n = h.float() * torch.rsqrt(h.float().pow(2).mean(-1, keepdim=True) + EPS) * gamma.float()
@@ -283,9 +370,12 @@ def run_ffn(iters, warm, shapes=None):
         ref = x.float() + (F.silu(gu[:, :dff]) * gu[:, dff:]) @ Wd.float()
         rel = (y_hk.float() - ref).norm().item() / ref.norm().item()
         ffn_c(h, gamma, Wgu, Wd, x); torch.cuda.synchronize()           # trigger compile pre-timing
-        t_hk, t_c, t_e = _bench(hk, iters, warm), _bench(compiled, iters, warm), _bench(eager, iters, warm)
+        t_hk, t_e = _bench(hk, iters, warm), _bench(eager, iters, warm)
+        per_mode["eager"] = round(t_e, 4)
         rows.append({"shape": [M, dm, dff], "hk_ms": round(t_hk, 4), "compile_ms": round(t_c, 4),
                      "eager_ms": round(t_e, 4), "vs_compile": round(t_c / t_hk, 3),
+                     "vs_best": round(min(t_c, t_e) / t_hk, 3),
+                     "baseline_mode": best_mode, "baseline_per_mode": per_mode,
                      "rel": round(rel, 4), "ok": bool(rel < 2e-2)})
     return rows
 
@@ -312,18 +402,21 @@ def run_ce(iters, warm, shapes=None):
         fwd = make_ce(W)
         def hk(i): fwd(h, labels)
         def _ce(): return F.cross_entropy(h @ W, labels, reduction="none")
-        ce_c = torch.compile(_ce, mode="max-autotune-no-cudagraphs", dynamic=False)
-        def compiled(i): ce_c()
+        compiled, t_c, best_mode, ce_c, per_mode = _best_mode_fn(
+            lambda m: torch.compile(_ce, mode=m, dynamic=False),
+            lambda c: (lambda i: c()), iters, warm)
         def eager(i):    _ce()
         loss_hk = fwd(h, labels); torch.cuda.synchronize()
         ref = ce_ref(h, W, labels)                                       # fp32 oracle
         rel = (loss_hk.float() - ref).norm().item() / ref.norm().item()
         ce_c(); torch.cuda.synchronize()                                # trigger compile pre-timing
-        t_hk, t_c, t_e = _bench(hk, iters, warm), _bench(compiled, iters, warm), _bench(eager, iters, warm)
+        t_hk, t_e = _bench(hk, iters, warm), _bench(eager, iters, warm)
+        per_mode["eager"] = round(t_e, 4)
         saved = M * vocab * 4 * 2                                        # [M,vocab] fp32 logits write+read
         rows.append({"shape": [M, vocab, d], "hk_ms": round(t_hk, 4), "compile_ms": round(t_c, 4),
                      "eager_ms": round(t_e, 4), "vs_compile": round(t_c / t_hk, 3),
-                     "vs_eager": round(t_e / t_hk, 3), "rel": round(rel, 4),
+                     "vs_eager": round(t_e / t_hk, 3), "vs_best": round(min(t_c, t_e) / t_hk, 3),
+                     "baseline_mode": best_mode, "baseline_per_mode": per_mode, "rel": round(rel, 4),
                      "ok": bool(rel < 2e-2), "saved_MB": round(saved / 1e6, 1)})
     return rows
 
@@ -332,8 +425,11 @@ FWD_CONTRACT = ("dtype contract (both paths): storage/IO bf16 (x, weights, q/k/v
                 "matmuls bf16-in -> fp32-accumulate -> bf16-out; RMSNorm reductions fp32; softmax fp32; output bf16.")
 FWD_DISCREP = [
     "attn: HK = native-GQA flash (H_KV=8 kv heads, hand-written, exp2/fp32 online softmax); "
-    "torch = flash SDPA with KV expanded to H=32 heads (torch 2.11+rocm7.13 native-GQA SDPA falls back to the "
-    "materialized math backend -> a WEAKER baseline we deliberately avoid). HK reads 4x less KV from HBM (real native-GQA win).",
+    f"torch = flash SDPA with KV expanded to H=32 heads (running torch {torch.__version__}). The KV expansion is "
+    "deliberate: on torch 2.11+rocm7.13 native-GQA SDPA was OBSERVED to fall back to the materialized math backend, "
+    "a WEAKER baseline we avoid. That fallback has NOT been re-verified on other torch/ROCm versions -- if you change "
+    "the image, re-check which SDPA backend is selected before trusting this baseline. "
+    "HK reads 4x less KV from HBM (real native-GQA win).",
     "fusion: HK fuses RoPE+RMS-scale into the projection GEMM epilogues and residuals into the consuming GEMMs "
     "(no intermediate HBM round-trips); torch.compile fuses only elementwise clusters around opaque vendor matmuls.",
     "HK pays an extra q/k un-permute gather (bf16 layout bridge to the attn kernel), counted in HK time; "
@@ -388,7 +484,9 @@ def run_forward_layer(iters, warm):
         gu = hn @ Wgu
         return h + (F.silu(gu[:, :dff]) * gu[:, dff:]) @ Wd
 
-    layer_c = torch.compile(_layer, mode="max-autotune-no-cudagraphs", dynamic=False)
+    _lc, t_c, best_mode, layer_c, per_mode = _best_mode_fn(
+        lambda m: torch.compile(_layer, mode=m, dynamic=False),
+        lambda c: (lambda i: c(x)), iters, warm)
     xo_hk, _ = fwd(x, r_attn, cos_sin_head)
     xo_t = layer_c(x); torch.cuda.synchronize()
     assert xo_hk.dtype == DTYPE and xo_t.dtype == DTYPE, f"dtype mismatch: hk={xo_hk.dtype} torch={xo_t.dtype}"
@@ -402,15 +500,18 @@ def run_forward_layer(iters, warm):
         rel_torch = (xo_t.float() - xo_ref.float()).norm().item() / den
         ok = rel_hk < 2e-2
     t_hk = _bench(lambda i: fwd(x, r_attn, cos_sin_head), iters, warm)
-    t_c = _bench(lambda i: layer_c(x), iters, warm)
     t_e = _bench(lambda i: _layer(x), iters, warm)
+    per_mode["eager"] = round(t_e, 4)
     return [{"shape": [M, d, dff], "heads": [H, H_KV, Dh], "hk_ms": round(t_hk, 4), "compile_ms": round(t_c, 4),
              "eager_ms": round(t_e, 4), "vs_compile": round(t_c / t_hk, 3), "vs_eager": round(t_e / t_hk, 3),
+             "vs_best": round(min(t_c, t_e) / t_hk, 3),
+             "baseline_mode": best_mode, "baseline_per_mode": per_mode,
              "rel_hk_vs_fp32": round(rel_hk, 4), "rel_torch_vs_fp32": round(rel_torch, 4),
              "rel_hk_vs_torch": round(rel_cross, 4), "out_dtype": str(xo_hk.dtype),
              "ok": bool(ok), "contract": FWD_CONTRACT, "discrepancies": FWD_DISCREP}]
 
 def main():
+    global REPEATS, COMPILE_MODES
     ap = argparse.ArgumentParser()
     ap.add_argument("--kernels", default=",".join(k for k in EPILOGUES if k != "noop" and "ref" in EPILOGUES[k]))
     ap.add_argument("--iters", type=int, default=50)
@@ -423,8 +524,12 @@ def main():
     ap.add_argument("--forward", action="store_true")
     ap.add_argument("--json", default=None)
     ap.add_argument("--repeats", type=int, default=1, help="median over N independent timing batches (jitter); run the process K times for autotune-choice variance")
+    ap.add_argument("--compile-modes", default=",".join(COMPILE_MODES),
+                    help="torch.compile modes to time the baseline under; the FASTEST is reported "
+                         "(so HK races torch at its strongest). 'max-autotune' enables CUDA graphs.")
     a = ap.parse_args()
-    global REPEATS; REPEATS = a.repeats
+    REPEATS = a.repeats
+    COMPILE_MODES = [m for m in a.compile_modes.split(",") if m]
 
     out = {"epilogues": [], "swiglu": [], "mlp": [], "ffn": [], "ce": [], "forward": [], "chain": []}
     if not a.no_epilogue:
