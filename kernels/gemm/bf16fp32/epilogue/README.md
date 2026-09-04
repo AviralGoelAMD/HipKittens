@@ -27,8 +27,9 @@ A new epilogue is **one composition header** in `epilogues/` + **one glue file**
 SwiGLU, `[M,2*d_ff] -> [M,d_ff]`) additionally needs an `out_shape` registry field, a `launch_swiglu`
 grid (N from the weight), and a `store_swiglu` -- so it does touch `gemm_base.cuh`/`ops/base.cuh`.
 
-1. **Composition** — `epilogues/<op>.cuh` holds the `Globals` (kernel inputs, in bind order:
-   `a, b, c` first, then this op's own `gl` fields, then a trailing `hipStream_t stream`) and the
+1. **Composition** — `epilogues/<op>.cuh` holds the `Globals` (kernel inputs ONLY, in bind order:
+   `a, b, c` first, then this op's own `gl` fields — no `stream`; it is a `launch` parameter, not
+   kernel data, since `Globals` is passed by value into the kernel) and the
    `Epilogue` (a static `apply` that transforms the accumulator and stores it), composing `ops/`:
    ```cpp
    #pragma once
@@ -37,7 +38,6 @@ grid (N from the weight), and a `store_swiglu` -- so it does touch `gemm_base.cu
    struct MyGlobals {
        _gl_A a; _gl_B b; _gl_C c;
        gl<bf16,-1,-1,-1,-1> my_input;   // your per-op tensor(s)
-       hipStream_t stream;
    };                                   // no extra inputs? reuse gemm_args_base, skip this struct
    struct MyEpilogue {
        template<typename Globals, typename Accum>

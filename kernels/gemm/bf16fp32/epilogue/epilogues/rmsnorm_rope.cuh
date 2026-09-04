@@ -14,7 +14,6 @@ struct RmsnormRopeGlobals {
     _gl_A a; _gl_B b; _gl_C c;
     gl<bf16,-1,-1,-1,-1> r;         // per-row inv_rms, [1,1,1,M] (M on the last axis)
     gl<bf16,-1,-1,-1,-1> cos_sin;   // rope_perm'd interleaved [cos,sin], [1,1,M,N]
-    hipStream_t stream;
 };
 struct RmsnormRopeEpilogue {
     template<typename Globals, typename Accum>

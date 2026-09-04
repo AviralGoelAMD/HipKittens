@@ -13,7 +13,6 @@ using namespace kittens;
 struct RopeGlobals {
     _gl_A a; _gl_B b; _gl_C c;
     gl<bf16,-1,-1,-1,-1> cos_sin;
-    hipStream_t stream;
 };
 struct RopeEpilogue {
     template<typename Globals, typename Accum>

@@ -1,4 +1,5 @@
 #include "gemm_base.cuh"
+#include "stream.cuh"
 #include "rope.cuh"
 #include "pyutils/pyutils.cuh"
 
@@ -9,6 +10,7 @@ void dispatch(RopeGlobals g) {
 }
 PYBIND11_MODULE(TK_MODULE_NAME, m) {
     m.doc() = "tk RoPE epilogue: out = RoPE(A@B), interleaved (requires rope_perm'd weight + cos_sin)";
+    hkstream::bind(m);
     py::bind_function<dispatch>(m, "dispatch",
         &RopeGlobals::a, &RopeGlobals::b, &RopeGlobals::c, &RopeGlobals::cos_sin);
 }

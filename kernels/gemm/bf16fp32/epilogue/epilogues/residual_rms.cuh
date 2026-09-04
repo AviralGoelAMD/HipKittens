@@ -13,7 +13,6 @@ struct ResidualRMSPartialsGlobals {
     gl<bf16,-1,-1,-1,-1>  gamma;      // [1,1,1,N] per-feature gamma
     gl<float,-1,-1,-1,-1> partials;   // [1,1,N/REG_BLOCK_N,M] per-(group,row) Sigma(h1^2)
     gl<bf16,-1,-1,-1,-1>  save;       // [1,1,M,N] saved h1
-    hipStream_t stream;
 };
 struct ResidualRMSPartialsEpilogue {
     template<typename Globals, typename Accum>

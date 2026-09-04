@@ -7,7 +7,6 @@
 struct PartialRMSGlobals {
     _gl_A a; _gl_B b;
     gl<float,-1,-1,-1,-1> partials;   // [1,1,N/REG_BLOCK_N,M]
-    hipStream_t stream;
 };
 struct PartialRMSEpilogue {
     template<typename Globals, typename Accum>

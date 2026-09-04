@@ -12,7 +12,6 @@ using namespace kittens;
 struct RmsnormSwigluGlobals {
     _gl_A a; _gl_B b; _gl_C c;
     gl<bf16,-1,-1,-1,-1> r;   // per-row inv_rms, [1,1,1,M] (M on the last axis)
-    hipStream_t stream;
 };
 struct RmsnormSwigluEpilogue {
     static constexpr int out_cols(int n) { return n / 2; }   // dim-reducing: c is [M, d_ff] = N/2

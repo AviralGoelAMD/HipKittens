@@ -1,4 +1,5 @@
 #include "gemm_base.cuh"
+#include "stream.cuh"
 #include "rmsnorm_rope.cuh"
 #include "pyutils/pyutils.cuh"
 
@@ -11,6 +12,7 @@ void dispatch(RmsnormRopeGlobals g) {
 }
 PYBIND11_MODULE(TK_MODULE_NAME, m) {
     m.doc() = "tk RMS->RoPE epilogue: out = RoPE(r * (A@B)), interleaved (requires rope_perm'd + gamma-folded weight + cos_sin)";
+    hkstream::bind(m);
     py::bind_function<dispatch>(m, "dispatch",
         &RmsnormRopeGlobals::a, &RmsnormRopeGlobals::b, &RmsnormRopeGlobals::c,
         &RmsnormRopeGlobals::r, &RmsnormRopeGlobals::cos_sin);

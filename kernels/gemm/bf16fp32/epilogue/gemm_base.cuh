@@ -1,5 +1,6 @@
 #pragma once
 #include "base.cuh"
+#include "stream.cuh"    // hkstream::cur() -- the launch stream (NOT a Globals field; see stream.cuh)
 #include <stdexcept>
 #include "pyutils/util.cuh"   // CHECK_CUDA_ERROR (HK's HIP error-check helper)
 
@@ -306,8 +307,14 @@ void gemm_kernel(const Globals g, int M, int N, int K) {
 // have no `c` at all. The two former special cases are captured by an optional `out_cols` trait and
 // the `requires { g.c; }` guard, so one function covers all three. Bindings call this, not a launch
 // hand-write.
+// `stream` is a LAUNCH parameter, not kernel data. Globals is passed BY VALUE into the kernel, so a
+// host-side stream handle living in it would ride into the kernarg segment unused. Note the rest of
+// HK's launch-descriptor pattern (grid()/block()/dynamic_shared_memory()) are member FUNCTIONS and
+// cost nothing; `stream` was the only member VARIABLE, and `launch` already derives everything else.
+// Defaults to the null stream -- exactly what bind_function's aggregate init produced when `stream`
+// was a (never-bound) struct member, so behavior is unchanged.
 template<typename Epilogue, typename Globals>
-void launch(Globals g) {
+void launch(Globals g, hipStream_t stream = hkstream::cur()) {
     const int M = g.a.rows(), N = g.b.rows(), K = g.a.cols();   // N = the true GEMM width (b = [N,K])
     if (M % BLOCK_SIZE || N % BLOCK_SIZE)
         throw std::runtime_error("GEMM: M and N must be multiples of BLOCK_SIZE (256)");
@@ -323,6 +330,6 @@ void launch(Globals g) {
     }
     const size_t mem = MAX_SHARED_MEMORY;
     CHECK_CUDA_ERROR(hipFuncSetAttribute((void*)gemm_kernel<Epilogue, Globals>, hipFuncAttributeMaxDynamicSharedMemorySize, mem));
-    gemm_kernel<Epilogue, Globals><<<dim3((N / BLOCK_SIZE) * (M / BLOCK_SIZE)), dim3(NUM_THREADS), mem, g.stream>>>(g, M, N, K);
+    gemm_kernel<Epilogue, Globals><<<dim3((N / BLOCK_SIZE) * (M / BLOCK_SIZE)), dim3(NUM_THREADS), mem, stream>>>(g, M, N, K);
     CHECK_CUDA_ERROR(hipGetLastError());
 }

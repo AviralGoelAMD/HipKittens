@@ -1,4 +1,5 @@
 #include "gemm_base.cuh"
+#include "stream.cuh"
 #include "residual_add.cuh"
 #include "pyutils/pyutils.cuh"
 
@@ -9,6 +10,7 @@ void dispatch(ResidualAddGlobals g) {
 }
 PYBIND11_MODULE(TK_MODULE_NAME, m) {
     m.doc() = "tk residual-add epilogue: out = (A@B) + residual ([M,N] skip connection)";
+    hkstream::bind(m);
     py::bind_function<dispatch>(m, "dispatch",
         &ResidualAddGlobals::a, &ResidualAddGlobals::b, &ResidualAddGlobals::c, &ResidualAddGlobals::residual);
 }

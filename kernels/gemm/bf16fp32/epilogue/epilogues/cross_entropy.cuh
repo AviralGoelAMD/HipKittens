@@ -24,7 +24,6 @@ struct CrossEntropyGlobals {
     gl<float,-1,-1,-1,-1> max_buf;       // [1,1,N/REG_BLOCK_N,M]  per-(group,row) softmax max
     gl<float,-1,-1,-1,-1> sumexp_buf;    // [1,1,N/REG_BLOCK_N,M]  per-(group,row) sum exp(logit-max)
     gl<float,1,1,1,1>     valid_n{nullptr,nullptr,nullptr,nullptr,nullptr};   // real vocab: cols >= valid_n are zero-pad, masked out of softmax (== N when unpadded)
-    hipStream_t stream;
 };
 
 struct PartialLseEpilogue {
@@ -82,7 +81,6 @@ struct CrossEntropyRmsGlobals {
     gl<float,-1,-1,-1,-1> sumexp_buf;    // [1,1,N/REG_BLOCK_N,M]  per-(group,row) sum exp(logit-max)
     gl<float,1,1,1,1>     valid_n{nullptr,nullptr,nullptr,nullptr,nullptr};   // real vocab: cols >= valid_n are zero-pad, masked out of softmax (== N when unpadded)
     gl<bf16,-1,-1,-1,-1>  r;             // [1,1,1,M]  per-row inv-rms (M on the last axis)
-    hipStream_t stream;
 };
 
 // apply_inv_rms (r * (A@B), per-row) THEN the EXACT PartialLseEpilogue body (max/exp/sum partials),

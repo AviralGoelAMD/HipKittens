@@ -12,7 +12,6 @@ using namespace kittens;
 struct aux_globals {
     gl<float,-1,-1,-1,-1> partials;   // input  [1,1,N/REG_BLOCK_N,M]
     gl<bf16,-1,-1,-1,-1>  r;          // output [1,1,1,M]
-    hipStream_t stream;
 };
 
 __global__ void rms_reduce(const gl<float,-1,-1,-1,-1> partials, gl<bf16,-1,-1,-1,-1> r) {
@@ -47,7 +46,6 @@ struct ce_aux_globals {                 // forward cross-entropy
     gl<float,-1,-1,-1,-1> labels;       // [1,1,1,M]
     gl<float,1,1,1,1>     valid_n{nullptr,nullptr,nullptr,nullptr,nullptr};   // real vocab; labels >= valid_n are pad slots -> ignored (loss 0)
     gl<float,-1,-1,-1,-1> loss;         // [1,1,1,M]
-    hipStream_t stream;
 };
 struct ce_aux_rms_globals {             // RMS -> cross-entropy: + per-row inv-rms r
     gl<float,-1,-1,-1,-1> max_buf;
@@ -58,7 +56,6 @@ struct ce_aux_rms_globals {             // RMS -> cross-entropy: + per-row inv-r
     gl<float,1,1,1,1>     valid_n{nullptr,nullptr,nullptr,nullptr,nullptr};   // real vocab; labels >= valid_n are pad slots -> ignored (loss 0)
     gl<bf16,-1,-1,-1,-1>  r;            // [1,1,1,M] per-row inv-rms (target *= r[row])
     gl<float,-1,-1,-1,-1> loss;
-    hipStream_t stream;
 };
 
 template<bool RMS>

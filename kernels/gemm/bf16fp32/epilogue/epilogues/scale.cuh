@@ -6,7 +6,6 @@
 struct ScaleGlobals {
     _gl_A a; _gl_B b; _gl_C c;
     gl<float,1,1,1,1> alpha{nullptr,nullptr,nullptr,nullptr,nullptr};
-    hipStream_t stream;
 };
 struct ScaleEpilogue {
     template<typename Globals, typename Accum>

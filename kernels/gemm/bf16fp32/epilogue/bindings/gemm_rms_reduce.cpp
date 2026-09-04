@@ -1,4 +1,5 @@
 #include "aux_reduce.cuh"
+#include "stream.cuh"
 #include "pyutils/pyutils.cuh"
 #include "pyutils/util.cuh"
 #include <stdexcept>
@@ -18,10 +19,11 @@ void dispatch(aux_globals g) {
         throw std::runtime_error("rms_reduce.reduce: partials must have at least one group (partials.rows() >= 1).");
     constexpr int TPB = 256;                                 // 4 wavefronts/block
     const long long total = (long long)M * kittens::WARP_THREADS;   // one wavefront per row
-    rms_reduce<<<(int)((total + TPB - 1) / TPB), TPB, 0, g.stream>>>(g.partials, g.r);
+    rms_reduce<<<(int)((total + TPB - 1) / TPB), TPB, 0, hkstream::cur()>>>(g.partials, g.r);
     CHECK_CUDA_ERROR(hipGetLastError());
 }
 PYBIND11_MODULE(TK_MODULE_NAME, m) {
     m.doc() = "tk RMS reduce: per-(group,row) partials -> per-row 1/rms";
+    hkstream::bind(m);
     py::bind_function<dispatch>(m, "reduce", &aux_globals::partials, &aux_globals::r);
 }

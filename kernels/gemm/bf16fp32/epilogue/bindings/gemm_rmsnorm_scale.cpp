@@ -1,4 +1,5 @@
 #include "gemm_base.cuh"
+#include "stream.cuh"
 #include "rmsnorm_scale.cuh"
 #include "pyutils/pyutils.cuh"
 
@@ -11,6 +12,7 @@ void dispatch(RMSNormScaleGlobals g) {
 }
 PYBIND11_MODULE(TK_MODULE_NAME, m) {
     m.doc() = "tk RMSNorm-scale epilogue: out = (A@B) * r (per-row 1/rms) * gamma (per-feature gamma)";
+    hkstream::bind(m);
     py::bind_function<dispatch>(m, "dispatch",
         &RMSNormScaleGlobals::a, &RMSNormScaleGlobals::b, &RMSNormScaleGlobals::c,
         &RMSNormScaleGlobals::r, &RMSNormScaleGlobals::gamma);

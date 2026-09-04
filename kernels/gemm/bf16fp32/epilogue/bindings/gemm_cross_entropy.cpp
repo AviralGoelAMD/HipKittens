@@ -1,4 +1,5 @@
 #include "gemm_base.cuh"
+#include "stream.cuh"
 #include "cross_entropy.cuh"
 #include "pyutils/pyutils.cuh"
 
@@ -18,6 +19,7 @@ void dispatch(CrossEntropyGlobals g) {
 
 PYBIND11_MODULE(TK_MODULE_NAME, m) {
     m.doc() = "tk forward fused cross-entropy: per-(group,row) softmax partials only";
+    hkstream::bind(m);
     py::bind_function<dispatch>(m, "dispatch",
         &CrossEntropyGlobals::a, &CrossEntropyGlobals::b,
         &CrossEntropyGlobals::max_buf, &CrossEntropyGlobals::sumexp_buf, &CrossEntropyGlobals::valid_n);

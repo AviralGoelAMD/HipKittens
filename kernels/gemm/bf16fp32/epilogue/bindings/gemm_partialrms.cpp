@@ -1,4 +1,5 @@
 #include "gemm_base.cuh"
+#include "stream.cuh"
 #include "partialrms.cuh"
 #include "pyutils/pyutils.cuh"
 
@@ -10,6 +11,7 @@ void dispatch(PartialRMSGlobals g) {
     launch<PartialRMSEpilogue, PartialRMSGlobals>(g);
 }
 PYBIND11_MODULE(TK_MODULE_NAME, m) {
+    hkstream::bind(m);
     m.doc() = "tk partial-RMS epilogue: emits per-(row, N/REG_BLOCK_N col-group) Sigma((A@B)^2) partials ONLY (no C store); aux reduces the groups -> per-row 1/rms";
     py::bind_function<dispatch>(m, "dispatch",
         &PartialRMSGlobals::a, &PartialRMSGlobals::b, &PartialRMSGlobals::partials);

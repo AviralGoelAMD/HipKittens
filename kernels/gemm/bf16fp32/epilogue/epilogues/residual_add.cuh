@@ -7,7 +7,6 @@
 struct ResidualAddGlobals {
     _gl_A a; _gl_B b; _gl_C c;
     gl<bf16,-1,-1,-1,-1> residual;   // [1,1,M,N] skip connection
-    hipStream_t stream;
 };
 struct ResidualAddEpilogue {
     template<typename Globals, typename Accum>

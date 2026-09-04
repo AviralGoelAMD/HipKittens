@@ -1,4 +1,5 @@
 #include "gemm_base.cuh"
+#include "stream.cuh"
 #include "residual_rms.cuh"
 #include "pyutils/pyutils.cuh"
 
@@ -16,6 +17,7 @@ void dispatch(ResidualRMSPartialsGlobals g) {
 }
 PYBIND11_MODULE(TK_MODULE_NAME, m) {
     m.doc() = "tk residual-RMS-partials epilogue: h1 = A@B + residual -> save h1, emit Sigma(h1^2) partials, store h1*gamma";
+    hkstream::bind(m);
     py::bind_function<dispatch>(m, "dispatch",
         &ResidualRMSPartialsGlobals::a, &ResidualRMSPartialsGlobals::b, &ResidualRMSPartialsGlobals::c,
         &ResidualRMSPartialsGlobals::residual, &ResidualRMSPartialsGlobals::gamma,

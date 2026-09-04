@@ -8,7 +8,6 @@ struct RMSNormScaleGlobals {
     _gl_A a; _gl_B b; _gl_C c;
     gl<bf16,-1,-1,-1,-1> r;       // per-row inv_rms, [1,1,1,M] (M on the last axis)
     gl<bf16,-1,-1,-1,-1> gamma;   // per-feature gamma, [1,1,1,N]
-    hipStream_t stream;
 };
 struct RMSNormScaleEpilogue {
     template<typename Globals, typename Accum>
