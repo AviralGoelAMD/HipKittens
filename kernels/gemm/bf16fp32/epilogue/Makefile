@@ -39,6 +39,26 @@ ICXXFLAGS+= -I${THUNDERKITTENS_ROOT}/prototype $(shell python3 -m pybind11 --inc
 
 HIPFLAGS   += -DTK_MODULE_NAME=$(MODULE)
 
+# --- Verified epilogue optimizations, ON BY DEFAULT -------------------------------------------
+# Each entry is a compile-time switch guarding an alternative body written next to the original
+# in the same source file, so the two can be A/B'd from one tree and a winner ships by flipping
+# a default rather than by resurrecting a patch.
+#
+#   CODA_OPT_FAST_SILU   ops/activations.cuh -- silu's IEEE divide replaced by
+#                        x * rcp(1 + exp2(-x*log2e)). gfx950 MI355X: silu 1.13x,
+#                        rmsnorm_swiglu 1.10x, swiglu 1.07x. Accuracy measured identical
+#                        (util/silu_ab.py). Does NOT touch the base GEMM mainloop.
+#
+# To build the ORIGINAL bodies -- for an A/B, or to rule this out when bisecting a numerics
+# question -- override with an empty value:
+#     make CODA_OPT_DEFAULTS= ...
+#     CODA_OPT_DEFAULTS= util/build.sh silu
+CODA_OPT_DEFAULTS ?= -DCODA_OPT_FAST_SILU
+HIPFLAGS   += $(CODA_OPT_DEFAULTS)
+
+# EXTRA_FLAGS is for switches under evaluation that are not yet defaults.
+HIPFLAGS   += $(EXTRA_FLAGS)
+
 .PHONY: all clean
 # Default target
 all: $(MODULE)$(shell python3-config --extension-suffix)
