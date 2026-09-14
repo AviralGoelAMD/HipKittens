@@ -39,11 +39,28 @@ import torch
 from swiglu import gate_up_perm
 
 SHAPES = [(2048, 1024, 512), (4096, 4096, 4096)]
-# Timing shapes, (M, N, K) with N = GEMM output width. Small N is where the epilogue is the
-# biggest share of the kernel, so that is where an activation change shows up most.
+# Timing shapes, (M, N, K) with N = GEMM output width.
 TIME_SHAPES = [(2048, 1024, 512), (4096, 4096, 4096), (8192, 8192, 8192)]
 RMS_EPS = 1e-5
 SEED = 7
+
+# Timing discipline, copied deliberately from util/bench.py so the two tools cannot disagree.
+# An earlier version of this file rotated only 2 input sets. That keeps the operands resident in
+# the 256 MiB last-level cache, which makes the GEMM artificially fast, which makes the epilogue
+# an artificially large share of the kernel, which INFLATES the measured speedup: it read 1.286x
+# for silu where bench.py's cold pool read 1.163x -- same kernel, same shape, different cache
+# state. A rotating pool large enough to overflow the LLC is the honest setting, and it is what a
+# real model sees, where each GEMM gets operands nobody just touched.
+LLC_BYTES = 256 * 1024 * 1024
+POOL_BUDGET = 6 * 1024**3      # cap so the 8192^3 sets still fit comfortably in HBM
+TIME_REPEATS = 3               # median-of-medians; the small shapes are the noisy ones
+
+
+def _pool_size(bytes_per_set):
+    """Enough distinct input sets that consecutive iterations miss the LLC (bench.py's rule)."""
+    if bytes_per_set <= 0:
+        return 1
+    return max(1, min(LLC_BYTES // bytes_per_set + 1, max(1, POOL_BUDGET // bytes_per_set)))
 
 
 def inputs(m, n, k):
@@ -73,33 +90,43 @@ def order_key(t_bf16):
     return torch.where(neg, 0x8000 - mag, 0x8000 + mag)
 
 
-def _bench(fn, pool_n, iters=50, warm=10):
-    """Median per-iteration device time (ms), CUDA events. `fn(i)` must not synchronize."""
-    for i in range(warm):
-        fn(i % pool_n)
-    torch.cuda.synchronize()
-    ts = []
-    for i in range(iters):
-        s, e = torch.cuda.Event(True), torch.cuda.Event(True)
-        s.record(); fn(i % pool_n); e.record(); e.synchronize()
-        ts.append(s.elapsed_time(e))
-    ts.sort()
-    return ts[len(ts) // 2]
+def _bench(fn, pool_n, iters=50, warm=10, repeats=TIME_REPEATS):
+    """Median-of-medians per-iteration device time (ms), CUDA events.
+    `fn(i)` runs one iteration against input set i and must NOT synchronize."""
+    meds = []
+    for _ in range(max(1, repeats)):
+        for i in range(warm):
+            fn(i % pool_n)
+        torch.cuda.synchronize()
+        ts = []
+        for i in range(iters):
+            s, e = torch.cuda.Event(True), torch.cuda.Event(True)
+            s.record(); fn(i % pool_n); e.record(); e.synchronize()
+            ts.append(s.elapsed_time(e))
+        ts.sort()
+        meds.append(ts[len(ts) // 2])
+    meds.sort()
+    return meds[len(meds) // 2]
 
 
-def time_kernels():
+def time_kernels(verbose=False):
     """Time every kernel that shares silu_op, at (M, N, K) with N = GEMM output width.
 
-    The three are timed the same way and in the same process, so the only thing separating a
-    'save' run from a 'compare' run is which silu_op got compiled in."""
+    All three are timed the same way in the same process, so the only thing separating a 'save'
+    run from a 'compare' run is which silu_op got compiled in."""
     import tk_silu, tk_swiglu, tk_rmsnorm_swiglu
     out = {}
-    POOL = 2      # rotate a couple of input sets so we are not timing one hot cache line
     for (m, n, k) in TIME_SHAPES:
         torch.manual_seed(SEED + m + n + k)
         perm = gate_up_perm(n // 2)
+        # bytes touched per iteration: A + the two weights + the full and half outputs
+        per_set = (m * k + n * k + k * n + m * n + m * n // 2) * 2
+        pool_n = _pool_size(per_set)
+        if verbose:
+            print(f"  ({m},{n},{k}): {per_set/1e6:.0f} MB/set, rotating {pool_n} sets "
+                  f"({pool_n*per_set/1e6:.0f} MB vs a {LLC_BYTES/1e6:.0f} MB LLC)")
         sets = []
-        for _ in range(POOL):
+        for _ in range(pool_n):
             A = torch.randn(m, k, device="cuda", dtype=torch.bfloat16)
             Bt = torch.randn(n, k, device="cuda", dtype=torch.bfloat16)          # silu: [N,K]
             W = torch.randn(k, n, device="cuda", dtype=torch.bfloat16)
@@ -109,10 +136,10 @@ def time_kernels():
                              Cfull=torch.empty(m, n, device="cuda", dtype=torch.bfloat16),
                              Chalf=torch.empty(m, n // 2, device="cuda", dtype=torch.bfloat16)))
         res = {}
-        res["silu"] = _bench(lambda i: tk_silu.dispatch(sets[i]["A"], sets[i]["Bt"], sets[i]["Cfull"]), POOL)
-        res["swiglu"] = _bench(lambda i: tk_swiglu.dispatch(sets[i]["A"], sets[i]["Wp"], sets[i]["Chalf"]), POOL)
+        res["silu"] = _bench(lambda i: tk_silu.dispatch(sets[i]["A"], sets[i]["Bt"], sets[i]["Cfull"]), pool_n)
+        res["swiglu"] = _bench(lambda i: tk_swiglu.dispatch(sets[i]["A"], sets[i]["Wp"], sets[i]["Chalf"]), pool_n)
         res["rmsnorm_swiglu"] = _bench(
-            lambda i: tk_rmsnorm_swiglu.dispatch(sets[i]["A"], sets[i]["Wp"], sets[i]["Chalf"], sets[i]["r"]), POOL)
+            lambda i: tk_rmsnorm_swiglu.dispatch(sets[i]["A"], sets[i]["Wp"], sets[i]["Chalf"], sets[i]["r"]), pool_n)
         out[f"{m}_{n}_{k}"] = res
         del sets
         torch.cuda.empty_cache()
@@ -132,7 +159,7 @@ def report_timing(fast_t, orig_t):
 def main():
     mode, path = sys.argv[1], sys.argv[2]
     if mode == "save":
-        out = {"_timing": time_kernels()}
+        out = {"_timing": time_kernels(verbose=True)}
         for (m, n, k) in SHAPES:
             A, Bt, C = run(m, n, k)
             # Persist the INPUTS alongside the outputs. torch.manual_seed IS reproducible across
@@ -147,7 +174,7 @@ def main():
         return
 
     ref = torch.load(path)
-    report_timing(ref["_timing"], time_kernels())
+    report_timing(ref["_timing"], time_kernels(verbose=True))
     print(f"\n{'shape':<20}{'differ':>10}{'pct':>9}{'flush0':>9}{'flips':>7}"
           f"{'max |diff|':>12}{'closer:fast':>13}{'closer:orig':>13}{'tie':>10}")
     print("-" * 105)

@@ -45,13 +45,14 @@ HIPFLAGS   += -DTK_MODULE_NAME=$(MODULE)
 # a default rather than by resurrecting a patch.
 #
 #   CODA_OPT_FAST_SILU   ops/activations.cuh -- silu's IEEE divide replaced by
-#                        x * rcp(1 + exp2(-x*log2e)). Reproduce both the timing and the
-#                        accuracy A/B with util/silu_ab.py (save on this build, then
+#                        x * rcp(1 + exp2(-x*log2e)). Reproduce the timing AND the accuracy A/B
+#                        with util/silu_ab.py (save on this build, then
 #                        `CODA_OPT_DEFAULTS= util/build.sh --no-base silu,swiglu,rmsnorm_swiglu`
-#                        and compare). gfx950 MI355X: the gain is concentrated at small N --
-#                        silu 1.29x / swiglu 1.10x / rmsnorm_swiglu 1.19x at (2048,1024,512),
-#                        fading to ~1.01x at 8192^3 as the GEMM comes to dominate. Accuracy
-#                        measured identical (normwise 4.06e-3 both ways, at bf16's own floor).
+#                        and compare). gfx950 MI355X, cold rotating pool: the gain is
+#                        concentrated at small N -- silu 1.14x / swiglu 1.12x /
+#                        rmsnorm_swiglu 1.11x at (2048,1024,512), fading to ~1.01x at 8192^3 as
+#                        the GEMM comes to dominate. No shape regresses. Accuracy measured
+#                        identical (normwise 4.06e-3 both ways, at bf16's own rounding floor).
 #                        Does NOT touch the base GEMM mainloop.
 #
 # To build the ORIGINAL bodies -- for an A/B, or to rule this out when bisecting a numerics

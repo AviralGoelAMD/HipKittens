@@ -29,9 +29,10 @@ using namespace kittens;
 //   tk_silu  baseline : 256 VGPRs, 12 VGPR spills, 52 B/lane scratch
 //   tk_silu  fast     : 256 VGPRs, 20 VGPR spills, 84 B/lane scratch   <-- MORE spilling
 //
-// and it is still faster -- 1.29x at (2048,1024,512), measured by util/silu_ab.py on gfx950.
-// So the win is **instruction count**, not register pressure: ~8 fewer VALU ops per element
-// outweighs the extra spill traffic. The allocator spent some of the freed pressure elsewhere.
+// and it is still faster -- 1.14x at (2048,1024,512) against a cache-cold rotating pool,
+// measured by util/silu_ab.py on gfx950. So the win is **instruction count**, not register
+// pressure: ~8 fewer VALU ops per element outweighs the extra spill traffic. The register
+// allocator spent some of the freed pressure elsewhere.
 //
 // Note this is NOT a register-pressure win, which is what you would expect and what I first
 // assumed. Removing ~8 VALU ops per element simply outweighs the extra spill traffic. So neither
