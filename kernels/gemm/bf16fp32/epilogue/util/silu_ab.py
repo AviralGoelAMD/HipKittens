@@ -1,16 +1,17 @@
 #!/usr/bin/env python3
-"""silu_ab.py - is CODA_OPT_FAST_SILU less accurate than the original IEEE-divide silu?
+"""silu_ab.py - does CODA_OPT_FAST_SILU change silu's ACCURACY, and what does it buy in TIME?
 
-Run twice against the SAME source tree, once per build:
+Run twice against the same source tree, once per build:
 
     python3 util/silu_ab.py save    /tmp/silu_fast.pt   # with the fast build installed
     python3 util/silu_ab.py compare /tmp/silu_fast.pt   # with the original build installed
 
 Why this is a fair test: both builds share a **bit-identical GEMM mainloop** (gemm_base.cuh is
 untouched and the flag only selects a branch inside silu_op), so the fp32 accumulator feeding
-silu is the same in both. Any difference in the stored bf16 is attributable to silu alone.
+silu is the same in both. Any difference in the stored bf16, or in the time, is attributable to
+silu alone.
 
-Two things are measured, and only the second one answers the question:
+ACCURACY. Two things are reported, and only the second one answers the question:
 
   1. How often do the two builds' bf16 outputs differ, and by how many REPRESENTABLE STEPS.
      "Steps" is computed on a monotonic ordering of the bf16 bit pattern, not by subtracting
@@ -18,15 +19,30 @@ Two things are measured, and only the second one answers the question:
      a "difference" of 32768 for two numbers that are equal).
 
   2. Which build lands closer to a float64 oracle. Differing from each other proves nothing on
-     its own; what matters is whether the fast build is FARTHER FROM THE TRUTH. Both are scored
-     against silu computed in float64, then rounded to bf16 the same way the kernel stores it.
+     its own; what matters is whether the fast build is FARTHER FROM THE TRUTH.
+
+TIMING covers all three kernels that share silu_op -- silu, swiglu and rmsnorm_swiglu. It lives
+here rather than in util/bench.py because that harness's registry reaches only silu and swiglu,
+and its swiglu section labels shapes (M, d_ff, K) while every other table is (M, N, K). Two
+conventions behind identical-looking labels means a reader compares 2x different GEMM widths
+without noticing, so this module fixes ONE convention and says so:
+
+    SHAPES ARE (M, N, K) WHERE N IS THE GEMM OUTPUT WIDTH.
+
+swiglu and rmsnorm_swiglu are dim-reducing, so for them N is the weight width (2 * d_ff) and the
+stored output is [M, N/2].
 """
 import sys, os
 sys.path.insert(0, os.getcwd())
 sys.path.insert(0, os.path.join(os.getcwd(), "util"))
 import torch
+from swiglu import gate_up_perm
 
 SHAPES = [(2048, 1024, 512), (4096, 4096, 4096)]
+# Timing shapes, (M, N, K) with N = GEMM output width. Small N is where the epilogue is the
+# biggest share of the kernel, so that is where an activation change shows up most.
+TIME_SHAPES = [(2048, 1024, 512), (4096, 4096, 4096), (8192, 8192, 8192)]
+RMS_EPS = 1e-5
 SEED = 7
 
 
@@ -57,10 +73,66 @@ def order_key(t_bf16):
     return torch.where(neg, 0x8000 - mag, 0x8000 + mag)
 
 
+def _bench(fn, pool_n, iters=50, warm=10):
+    """Median per-iteration device time (ms), CUDA events. `fn(i)` must not synchronize."""
+    for i in range(warm):
+        fn(i % pool_n)
+    torch.cuda.synchronize()
+    ts = []
+    for i in range(iters):
+        s, e = torch.cuda.Event(True), torch.cuda.Event(True)
+        s.record(); fn(i % pool_n); e.record(); e.synchronize()
+        ts.append(s.elapsed_time(e))
+    ts.sort()
+    return ts[len(ts) // 2]
+
+
+def time_kernels():
+    """Time every kernel that shares silu_op, at (M, N, K) with N = GEMM output width.
+
+    The three are timed the same way and in the same process, so the only thing separating a
+    'save' run from a 'compare' run is which silu_op got compiled in."""
+    import tk_silu, tk_swiglu, tk_rmsnorm_swiglu
+    out = {}
+    POOL = 2      # rotate a couple of input sets so we are not timing one hot cache line
+    for (m, n, k) in TIME_SHAPES:
+        torch.manual_seed(SEED + m + n + k)
+        perm = gate_up_perm(n // 2)
+        sets = []
+        for _ in range(POOL):
+            A = torch.randn(m, k, device="cuda", dtype=torch.bfloat16)
+            Bt = torch.randn(n, k, device="cuda", dtype=torch.bfloat16)          # silu: [N,K]
+            W = torch.randn(k, n, device="cuda", dtype=torch.bfloat16)
+            Wp = W[:, perm.to(W.device)].t().contiguous()                        # swiglu: permuted
+            r = torch.rsqrt(A.float().pow(2).mean(-1) + RMS_EPS).to(torch.bfloat16).contiguous()
+            sets.append(dict(A=A, Bt=Bt, Wp=Wp, r=r,
+                             Cfull=torch.empty(m, n, device="cuda", dtype=torch.bfloat16),
+                             Chalf=torch.empty(m, n // 2, device="cuda", dtype=torch.bfloat16)))
+        res = {}
+        res["silu"] = _bench(lambda i: tk_silu.dispatch(sets[i]["A"], sets[i]["Bt"], sets[i]["Cfull"]), POOL)
+        res["swiglu"] = _bench(lambda i: tk_swiglu.dispatch(sets[i]["A"], sets[i]["Wp"], sets[i]["Chalf"]), POOL)
+        res["rmsnorm_swiglu"] = _bench(
+            lambda i: tk_rmsnorm_swiglu.dispatch(sets[i]["A"], sets[i]["Wp"], sets[i]["Chalf"], sets[i]["r"]), POOL)
+        out[f"{m}_{n}_{k}"] = res
+        del sets
+        torch.cuda.empty_cache()
+    return out
+
+
+def report_timing(fast_t, orig_t):
+    print(f"\nTIMING  -- shapes are (M, N, K) with N = GEMM OUTPUT WIDTH")
+    print(f"{'kernel':<18}{'shape':<22}{'original ms':>13}{'fast ms':>11}{'speedup':>10}")
+    print("-" * 74)
+    for key in fast_t:
+        m, n, k = key.split("_")
+        for kern in ("silu", "swiglu", "rmsnorm_swiglu"):
+            f, o = fast_t[key][kern], orig_t[key][kern]
+            print(f"{kern:<18}{'(' + m + ', ' + n + ', ' + k + ')':<22}{o:>13.5f}{f:>11.5f}{o / f:>10.3f}")
+
 def main():
     mode, path = sys.argv[1], sys.argv[2]
     if mode == "save":
-        out = {}
+        out = {"_timing": time_kernels()}
         for (m, n, k) in SHAPES:
             A, Bt, C = run(m, n, k)
             # Persist the INPUTS alongside the outputs. torch.manual_seed IS reproducible across
@@ -71,10 +143,11 @@ def main():
             # shipping the bytes costs nothing. Run 2 loads these instead of redrawing them.
             out[f"{m}_{n}_{k}"] = {"C": C, "A": A.cpu(), "Bt": Bt.cpu()}
         torch.save(out, path)
-        print(f"  saved fast-build outputs AND inputs for {len(out)} shapes")
+        print(f"  saved fast-build outputs, inputs and timings for {len(out) - 1} shapes")
         return
 
     ref = torch.load(path)
+    report_timing(ref["_timing"], time_kernels())
     print(f"\n{'shape':<20}{'differ':>10}{'pct':>9}{'flush0':>9}{'flips':>7}"
           f"{'max |diff|':>12}{'closer:fast':>13}{'closer:orig':>13}{'tie':>10}")
     print("-" * 105)
