@@ -44,23 +44,36 @@ TIME_SHAPES = [(2048, 1024, 512), (4096, 4096, 4096), (8192, 8192, 8192)]
 RMS_EPS = 1e-5
 SEED = 7
 
-# Timing discipline, copied deliberately from util/bench.py so the two tools cannot disagree.
-# An earlier version of this file rotated only 2 input sets. That keeps the operands resident in
-# the 256 MiB last-level cache, which makes the GEMM artificially fast, which makes the epilogue
-# an artificially large share of the kernel, which INFLATES the measured speedup: it read 1.286x
-# for silu where bench.py's cold pool read 1.163x -- same kernel, same shape, different cache
-# state. A rotating pool large enough to overflow the LLC is the honest setting, and it is what a
-# real model sees, where each GEMM gets operands nobody just touched.
+# Timing discipline. Two knobs were changed together early on and the effect was credited to the
+# wrong one. `pool_sweep()` below is what untangled them, and it stays in the file so nobody has
+# to repeat that. What two independent sweeps actually support:
+#
+# 1. REPEATS is the knob that mattered. The first version took a SINGLE median of 50 iterations,
+#    and at the small shape that read silu 1.286x and swiglu 0.962x. Median-of-medians over 3
+#    batches moves those to ~1.14x and ~1.02x. Those originals were NOISE.
+#
+# 2. POOL SIZE has NO RESOLVABLE EFFECT here -- measured, and deliberately not over-claimed.
+#    Across 1 to 208 sets (0.04x to 8x the LLC) the speedup spans 1.134-1.165, while the
+#    run-to-run spread at a FIXED pool size is 0.010-0.014. The variation across pool sizes is
+#    the same size as the variation between repeats of the same pool size, so it is noise.
+#    (A single earlier sweep looked like a clean plateau at 2x LLC. It did not replicate. One
+#    sweep is one sample.)
+#
+# We still size the pool past the LLC, because that is what a real model sees -- every GEMM gets
+# operands nobody just touched -- and because it costs nothing. NOT because it moves the number.
 LLC_BYTES = 256 * 1024 * 1024
+POOL_TARGET = 2 * LLC_BYTES    # deployment-realistic, not a tuned value; see pool_sweep()
 POOL_BUDGET = 6 * 1024**3      # cap so the 8192^3 sets still fit comfortably in HBM
-TIME_REPEATS = 3               # median-of-medians; the small shapes are the noisy ones
+TIME_REPEATS = 3               # median-of-medians; THIS is the knob that mattered
 
 
 def _pool_size(bytes_per_set):
-    """Enough distinct input sets that consecutive iterations miss the LLC (bench.py's rule)."""
+    """Distinct input sets to rotate. Targets POOL_TARGET bytes so the working set is safely past
+    the LLC and on the plateau `pool_sweep()` measured, capped by POOL_BUDGET for the big shapes
+    (one 8192^3 set is already 604 MB, i.e. 2.3x the LLC on its own)."""
     if bytes_per_set <= 0:
         return 1
-    return max(1, min(LLC_BYTES // bytes_per_set + 1, max(1, POOL_BUDGET // bytes_per_set)))
+    return max(1, min(POOL_TARGET // bytes_per_set + 1, max(1, POOL_BUDGET // bytes_per_set)))
 
 
 def inputs(m, n, k):
@@ -107,6 +120,53 @@ def _bench(fn, pool_n, iters=50, warm=10, repeats=TIME_REPEATS):
         meds.append(ts[len(ts) // 2])
     meds.sort()
     return meds[len(meds) // 2]
+
+
+def pool_sweep():
+    """Is the rotating pool actually big enough to go cache-cold?
+
+    `_pool_size` follows bench.py's rule (LLC // per_set + 1), which for the small shape lands on
+    a working set past the LLC. Two sweeps show pool size has no resolvable effect at this shape,
+    but that is a MEASURED conclusion, not an assumption -- which is the point of keeping this.
+
+    So: time silu at the small shape across a range of pool sizes. If the measured speedup falls
+    as the pool grows and then FLATTENS, the plateau is the true cold-cache value and any pool on
+    the plateau is sufficient. If it were still falling at the shipped size, the shipped size is
+    too warm and the reported number too generous.
+
+    Returns per-pool timings; run on both builds and compare the ratio at each pool size."""
+    import tk_silu
+    m, n, k = TIME_SHAPES[0]
+    per_set = (m * k + n * k + k * n + m * n + m * n // 2) * 2
+    shipped = _pool_size(per_set)
+    sizes = sorted({1, 2, 8, max(1, shipped // 2), shipped, shipped * 2, shipped * 4})
+    out = {}
+    for pool_n in sizes:
+        if pool_n * per_set > POOL_BUDGET:
+            continue
+        torch.manual_seed(SEED + m + n + k)
+        sets = [dict(A=torch.randn(m, k, device="cuda", dtype=torch.bfloat16),
+                     Bt=torch.randn(n, k, device="cuda", dtype=torch.bfloat16),
+                     C=torch.empty(m, n, device="cuda", dtype=torch.bfloat16))
+                for _ in range(pool_n)]
+        out[pool_n] = _bench(lambda i: tk_silu.dispatch(sets[i]["A"], sets[i]["Bt"], sets[i]["C"]), pool_n)
+        del sets
+        torch.cuda.empty_cache()
+    return {"shipped": shipped, "per_set": per_set, "ms": out}
+
+
+def report_sweep(fast_s, orig_s):
+    per_set, shipped = fast_s["per_set"], fast_s["shipped"]
+    print(f"\nPOOL SENSITIVITY -- silu at {TIME_SHAPES[0]}, {per_set/1e6:.1f} MB per input set")
+    print(f"{'pool':>6}{'working set':>15}{'vs LLC':>9}{'original ms':>13}{'fast ms':>10}{'speedup':>10}")
+    print("-" * 65)
+    for p in sorted(fast_s["ms"]):
+        if p not in orig_s["ms"]:
+            continue
+        ws = p * per_set
+        tag = "  <- shipped" if p == shipped else ""
+        print(f"{p:>6}{ws/1e6:>12.0f} MB{ws/LLC_BYTES:>8.2f}x{orig_s['ms'][p]:>13.5f}"
+              f"{fast_s['ms'][p]:>10.5f}{orig_s['ms'][p]/fast_s['ms'][p]:>10.3f}{tag}")
 
 
 def time_kernels(verbose=False):
@@ -159,7 +219,7 @@ def report_timing(fast_t, orig_t):
 def main():
     mode, path = sys.argv[1], sys.argv[2]
     if mode == "save":
-        out = {"_timing": time_kernels(verbose=True)}
+        out = {"_timing": time_kernels(verbose=True), "_sweep": pool_sweep()}
         for (m, n, k) in SHAPES:
             A, Bt, C = run(m, n, k)
             # Persist the INPUTS alongside the outputs. torch.manual_seed IS reproducible across
@@ -175,6 +235,7 @@ def main():
 
     ref = torch.load(path)
     report_timing(ref["_timing"], time_kernels(verbose=True))
+    report_sweep(ref["_sweep"], pool_sweep())
     print(f"\n{'shape':<20}{'differ':>10}{'pct':>9}{'flush0':>9}{'flips':>7}"
           f"{'max |diff|':>12}{'closer:fast':>13}{'closer:orig':>13}{'tie':>10}")
     print("-" * 105)
