@@ -1,0 +1,23 @@
+# Build artifacts
+*.o
+*.s
+*.bc
+*.hipi
+*.hipfb
+*.d
+*.so
+*.out
+*-host-*
+*-hip-*
+*.rpass.log
+
+# Python caches
+__pycache__/
+
+# Benchmark results / scratch (local-only)
+results_*.json
+scratch/
+workloads/
+
+# Dev design notes (not production docs)
+LAYOUT_NOTES.md
