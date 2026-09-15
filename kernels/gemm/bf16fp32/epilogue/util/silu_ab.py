@@ -123,16 +123,18 @@ def _bench(fn, pool_n, iters=50, warm=10, repeats=TIME_REPEATS):
 
 
 def pool_sweep():
-    """Is the rotating pool actually big enough to go cache-cold?
+    """Does the rotating-pool size actually change the measured speedup? (Measured answer: no.)
 
-    `_pool_size` follows bench.py's rule (LLC // per_set + 1), which for the small shape lands on
-    a working set past the LLC. Two sweeps show pool size has no resolvable effect at this shape,
-    but that is a MEASURED conclusion, not an assumption -- which is the point of keeping this.
+    This exists because a reviewer doubted whether the small shape's pool was large enough to go
+    cache-cold. It was written expecting to confirm the pool mattered and showed the opposite,
+    which is the only reason the numbers this file reports are now right.
 
-    So: time silu at the small shape across a range of pool sizes. If the measured speedup falls
-    as the pool grows and then FLATTENS, the plateau is the true cold-cache value and any pool on
-    the plateau is sufficient. If it were still falling at the shipped size, the shipped size is
-    too warm and the reported number too generous.
+    Method: time silu at the small shape across a wide range of pool sizes on both builds and
+    compare the ratio at each size. Read it against the RUN-TO-RUN spread, not as a trend: two
+    independent sweeps over 1..208 sets (0.04x to 8x the LLC) span 1.134-1.165, while repeating a
+    FIXED pool size moves the answer by 0.010-0.014. Same magnitude, so there is no resolvable
+    pool effect here -- and a 'plateau' seen in ONE sweep is likely two coincident noise points.
+    (I made exactly that mistake; see the file header.)
 
     Returns per-pool timings; run on both builds and compare the ratio at each pool size."""
     import tk_silu
