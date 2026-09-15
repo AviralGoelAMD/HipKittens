@@ -39,10 +39,6 @@ ICXXFLAGS+= -I${THUNDERKITTENS_ROOT}/prototype $(shell python3 -m pybind11 --inc
 
 HIPFLAGS   += -DTK_MODULE_NAME=$(MODULE)
 
-# Verified epilogue optimizations, on by default. `CODA_OPT_DEFAULTS=` builds the original bodies.
-CODA_OPT_DEFAULTS ?= -DCODA_OPT_FAST_SILU
-HIPFLAGS   += $(CODA_OPT_DEFAULTS) $(EXTRA_FLAGS)
-
 .PHONY: all clean
 # Default target
 all: $(MODULE)$(shell python3-config --extension-suffix)

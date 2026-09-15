@@ -43,21 +43,14 @@ if [ "$base" = 1 ]; then
   cp "$BF16"/tk_kernel.cpython*.so "$EPI"/
 fi
 
-# -MMD tracks headers but NOT compiler flags, so a CODA_OPT_DEFAULTS/EXTRA_FLAGS change alone
-# leaves `make` thinking the module is up to date -- hence the force-remove in the loop below.
-export EXTRA_FLAGS="${EXTRA_FLAGS:-}"
-
 for k in $kernels; do
   src=$(ls bindings/gemm_"${k}"*.cpp 2>/dev/null || true)
   n=$(printf '%s\n' $src | grep -c . || true)
   [ "$n" = 1 ] || { echo "build.sh: '$k' -> $n bindings match (need exactly 1): ${src:-<none>}" >&2; exit 3; }
   kfile=$(basename "$src" .cpp); kfile="${kfile#gemm_}"   # e.g. gemm_rmsnorm_scale.cpp -> rmsnorm_scale
   mod="tk_$k"
-  rm -f "$mod"*.so "$mod".d
   echo "== $mod  (bindings/gemm_$kfile.cpp) =="
-  # forwarded only when the caller set it, so `CODA_OPT_DEFAULTS= util/build.sh silu` builds the originals
-  make KERNEL="$kfile" MODULE="$mod" GPU_TARGET="$GPU_TARGET" EXTRA_FLAGS="$EXTRA_FLAGS" \
-       ${CODA_OPT_DEFAULTS+CODA_OPT_DEFAULTS="$CODA_OPT_DEFAULTS"}
+  make KERNEL="$kfile" MODULE="$mod" GPU_TARGET="$GPU_TARGET"
 done
 
 echo "build.sh: done -> $(ls tk_*.so 2>/dev/null | tr '\n' ' ')"
