@@ -43,14 +43,9 @@ if [ "$base" = 1 ]; then
   cp "$BF16"/tk_kernel.cpython*.so "$EPI"/
 fi
 
-# The -DCODA_OPT_* optimization switches (see the Makefile) are COMPILER FLAGS, and a flag change
-# is NOT tracked by the -MMD header dependencies -- those only track #include edits. So flipping
-# CODA_OPT_DEFAULTS or EXTRA_FLAGS leaves every source mtime untouched, `make` reports the module
-# up to date, and you silently keep the PREVIOUS variant's binary. An A/B done that way compares a
-# kernel against itself. The `rm -f` in the loop below is what prevents that; it is the same trap
-# this script's own header already calls out for GPU_TARGET.
+# -MMD tracks headers but NOT compiler flags, so a CODA_OPT_DEFAULTS/EXTRA_FLAGS change alone
+# leaves `make` thinking the module is up to date -- hence the force-remove in the loop below.
 export EXTRA_FLAGS="${EXTRA_FLAGS:-}"
-[ -n "$EXTRA_FLAGS" ] && echo "build.sh: EXTRA_FLAGS=$EXTRA_FLAGS" || true   # `|| true`: set -e would abort on the empty case
 
 for k in $kernels; do
   src=$(ls bindings/gemm_"${k}"*.cpp 2>/dev/null || true)
@@ -60,9 +55,7 @@ for k in $kernels; do
   mod="tk_$k"
   rm -f "$mod"*.so "$mod".d
   echo "== $mod  (bindings/gemm_$kfile.cpp) =="
-  # CODA_OPT_DEFAULTS is forwarded only when the caller SET it (including to empty), so
-  # `CODA_OPT_DEFAULTS= util/build.sh silu` builds the original bodies for an A/B while an
-  # ordinary invocation gets the Makefile's verified-fast default.
+  # forwarded only when the caller set it, so `CODA_OPT_DEFAULTS= util/build.sh silu` builds the originals
   make KERNEL="$kfile" MODULE="$mod" GPU_TARGET="$GPU_TARGET" EXTRA_FLAGS="$EXTRA_FLAGS" \
        ${CODA_OPT_DEFAULTS+CODA_OPT_DEFAULTS="$CODA_OPT_DEFAULTS"}
 done

@@ -39,31 +39,9 @@ ICXXFLAGS+= -I${THUNDERKITTENS_ROOT}/prototype $(shell python3 -m pybind11 --inc
 
 HIPFLAGS   += -DTK_MODULE_NAME=$(MODULE)
 
-# --- Verified epilogue optimizations, ON BY DEFAULT -------------------------------------------
-# Each entry is a compile-time switch guarding an alternative body written next to the original
-# in the same source file, so the two can be A/B'd from one tree and a winner ships by flipping
-# a default rather than by resurrecting a patch.
-#
-#   CODA_OPT_FAST_SILU   ops/activations.cuh -- silu's IEEE divide replaced by
-#                        x * rcp(1 + exp2(-x*log2e)). Reproduce the timing AND the accuracy A/B
-#                        with util/silu_ab.py (save on this build, then
-#                        `CODA_OPT_DEFAULTS= util/build.sh --no-base silu,swiglu,rmsnorm_swiglu`
-#                        and compare). gfx950 MI355X, cold rotating pool: the gain is
-#                        concentrated at small N -- silu 1.14x / swiglu 1.12x /
-#                        rmsnorm_swiglu 1.11x at (2048,1024,512), fading to ~1.01x at 8192^3 as
-#                        the GEMM comes to dominate. No shape regresses. Accuracy measured
-#                        identical (normwise 4.06e-3 both ways, at bf16's own rounding floor).
-#                        Does NOT touch the base GEMM mainloop.
-#
-# To build the ORIGINAL bodies -- for an A/B, or to rule this out when bisecting a numerics
-# question -- override with an empty value:
-#     make CODA_OPT_DEFAULTS= ...
-#     CODA_OPT_DEFAULTS= util/build.sh silu
+# Verified epilogue optimizations, on by default. `CODA_OPT_DEFAULTS=` builds the original bodies.
 CODA_OPT_DEFAULTS ?= -DCODA_OPT_FAST_SILU
-HIPFLAGS   += $(CODA_OPT_DEFAULTS)
-
-# EXTRA_FLAGS is for switches under evaluation that are not yet defaults.
-HIPFLAGS   += $(EXTRA_FLAGS)
+HIPFLAGS   += $(CODA_OPT_DEFAULTS) $(EXTRA_FLAGS)
 
 .PHONY: all clean
 # Default target

@@ -252,6 +252,13 @@ def test_invariants(noop, scale_m, rms_m, resadd_m, silu_m):
     silu_m.dispatch(A, Bt, Os)
     torch.cuda.synchronize()
     ok &= _p("invariant silu==x*sigmoid(x)", torch.allclose(Os.float(), D * torch.sigmoid(D), rtol=2e-2, atol=1e-1))  # fp32-recomputed invariant -> looser than bf16 RTOL/ATOL
+    # saturating tails: silu(x)->0 as x->-inf, ->x as x->+inf. Guards the rcp/exp2 path, whose
+    # denominator overflows for very negative x (result must flush to 0, never NaN/inf).
+    At = init_randn((m, k), scale=40)                 # |D| ~ 1e3 -> both tails exercised
+    Dt = gemm_reference(At, Bt)
+    Ot = init_empty((m, n)); silu_m.dispatch(At, Bt, Ot); torch.cuda.synchronize()
+    ok &= _p("invariant silu tails finite", bool(torch.isfinite(Ot).all())
+             and torch.allclose(Ot.float(), Dt * torch.sigmoid(Dt), rtol=2e-2, atol=1e-1))
 
     # rmsnorm with r=1/rms(D), gamma=1 -> every output row has ~unit RMS
     r = torch.rsqrt(D.pow(2).mean(-1) + EPS).to(DTYPE)
