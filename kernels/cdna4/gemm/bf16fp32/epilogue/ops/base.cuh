@@ -21,3 +21,16 @@ __device__ inline void store_C(const Globals& g, const Accum& C, int row, int co
     store(g.c, C[1][0], {0, 0, co.m[1], co.n[0]});
     store(g.c, C[1][1], {0, 0, co.m[1], co.n[1]});
 }
+
+// Half-width store for SwiGLU. After the epilogue, the result sits in the gate sub-tiles C[*][0];
+// C[*][1] held the matching value columns and is no longer needed. The output c is [M, N/2]: the
+// gate sub-tile at column-chunk n0 = col*8 + wc (wc < 4, 32-col chunks) goes to output chunk col*4 + wc.
+template<typename Globals, typename Accum>
+__device__ inline void store_swiglu(const Globals& g, const Accum& C, int row, int col, int wr, int wc) {
+    constexpr int CHUNKS_PER_BLOCK = BLOCK_SIZE / HALF_REG_BLOCK_N;        // 8 x 32-col chunks per 256 cols
+    constexpr int CHUNKS_PER_HALF  = HALF_BLOCK_SIZE / HALF_REG_BLOCK_N;   // 4 chunks in the 128-col gate half
+    subtile_coords co = block_coords(row, col, wr, wc);
+    const int out_n = (co.n[0] / CHUNKS_PER_BLOCK) * CHUNKS_PER_HALF + (co.n[0] % CHUNKS_PER_BLOCK);
+    store(g.c, C[0][0], {0, 0, co.m[0], out_n});
+    store(g.c, C[1][0], {0, 0, co.m[1], out_n});
+}
