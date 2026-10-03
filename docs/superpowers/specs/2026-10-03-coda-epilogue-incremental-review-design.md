@@ -41,8 +41,11 @@ one by one, each using the Phase 2 and Phase 3 tools. Each follows the same revi
 - This login node (MI210, gfx90a, HIP 7.1.25424, AMD clang 20) can compile for gfx950. Verified:
   a full device compile of #90's `gemm_kernel<NoOpEpilogue, gemm_args_base>` gave 210 VGPRs,
   0 AGPRs, 0 spills. A host build of `bindings/gemm_noop.cpp` into a pybind `.so` also succeeded.
-- gfx950 hardware is AUSTIN MI355X via `kreb-hold` on the `miopen` partition, with source staged
-  on `/scratch`.
+- gfx950 hardware is AUSTIN MI355X, reached with `srun --constraint=AUSTIN
+  --gres=gpu:gfx950-mi355x:1` and a torch-bearing pytorch `.sqsh` image from `/cluster/images`
+  (vault `runbook-austin-gpu-verify`; the kreb images lack torch). Source is staged on beegfs
+  `/scratch`. The runbook warns `/scratch` was node-local on AUSTIN in one October trial, so the
+  plan probes it before the first GPU gate.
 
 ## Section 1: location and mechanics
 
@@ -118,7 +121,8 @@ present in the copy.
 
 ### gfx950 gate (AUSTIN MI355X)
 
-- Build with the chunk's `Makefile` inside the kreb gfx950 image, from source staged on `/scratch`.
+- Build with the chunk's `Makefile` inside the pytorch `.sqsh` image, from source staged on
+  `/scratch`.
 - A throwaway Python script (never committed) checks:
   1. **Accuracy:** output vs an fp32 `torch` reference computed from the same bf16 inputs, with
      `torch.testing.assert_close(rtol=1e-2, atol=1e-2)`. Shapes (M×N×K):
