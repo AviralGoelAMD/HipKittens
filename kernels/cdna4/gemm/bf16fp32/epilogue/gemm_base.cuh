@@ -303,7 +303,8 @@ inline void hip_check(hipError_t err, const char* what) {
     if (err != hipSuccess) throw std::runtime_error(std::string(what) + ": " + hipGetErrorString(err));
 }
 
-// Check shapes, then launch gemm_kernel<Epilogue>. a = [M,K], b = [N,K], c = [M,N].
+// Check shapes, then launch gemm_kernel<Epilogue>. a = [M,K], b = [N,K], c = [M,N]
+// (or [M, Epilogue::out_cols(N)] for epilogues that narrow the output).
 template<typename Epilogue, typename Globals>
 void launch(Globals g, hipStream_t stream = 0) {
     const int M = g.a.rows(), N = g.b.rows(), K = g.a.cols();
@@ -315,8 +316,10 @@ void launch(Globals g, hipStream_t stream = 0) {
         throw std::runtime_error("GEMM: K must be a multiple of 128");
     if (g.b.cols() != K)
         throw std::runtime_error("GEMM: operand shape mismatch (need a=[M,K], b=[N,K])");
-    if (g.c.rows() != M || g.c.cols() != N)
-        throw std::runtime_error("GEMM: output shape mismatch (need c=[M,N])");
+    int out_cols = N;                                   // dim-reducing epilogues narrow the output
+    if constexpr (requires { Epilogue::out_cols(N); }) out_cols = Epilogue::out_cols(N);
+    if (g.c.rows() != M || g.c.cols() != out_cols)
+        throw std::runtime_error("GEMM: output shape mismatch (need c=[M, out_cols(N)])");
     const size_t mem = MAX_SHARED_MEMORY;
     hip_check(hipFuncSetAttribute((void*)gemm_kernel<Epilogue, Globals>, hipFuncAttributeMaxDynamicSharedMemorySize, mem),
               "hipFuncSetAttribute");
