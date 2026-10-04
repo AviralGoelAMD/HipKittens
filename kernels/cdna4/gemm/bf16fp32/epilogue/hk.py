@@ -6,6 +6,7 @@ Prepare static weights once, then call:
     cs = hk.prepare_rope_table(cos_sin)                  # natural [M, N] bf16 [cos, sin] table
     y  = hk.matmul(x, w, epilogue="rmsnorm_swiglu", r=r)
     r  = hk.inv_rms(x, hk.prepare(W2))                   # [M] fp32 = 1 / rms(x @ W2)
+    h, r = hk.residual_rms(x, hk.prepare(Wo), residual)  # h = x @ Wo + residual, r = 1 / rms(h)
     hk.available()                                       # {epilogue: [argument names]}
 
 Every call launches on torch.cuda.current_stream() and does not synchronize. Inputs are never
@@ -198,3 +199,23 @@ def inv_rms(x, w):
         importlib.import_module("tk_partialrms").dispatch(x, w.tensor, partials, stream)
         importlib.import_module("tk_rms_reduce").dispatch(partials, r, stream)
     return r
+
+
+def residual_rms(x, w, residual):
+    """h = x @ W + residual (bf16 [M, N], the next residual stream) and r = 1 / rms(h) per row (fp32 [M],
+    eps 1e-5, from h before its bf16 rounding), via the residual_rms GEMM + rms_reduce. Needs a plain
+    weight without gamma; fold the norm's gamma into the next weight (hk.prepare(W, ..., gamma=g))."""
+    _check_weight(w, "plain", False, "residual_rms")
+    N, K = w.tensor.shape
+    _require(x, "x", BF16, (None, K))
+    _require(w.tensor, "w", BF16, (N, K), x.device)
+    M = x.shape[0]
+    _require(residual, "residual", BF16, (M, N), x.device)
+    h = torch.empty(M, N, dtype=BF16, device=x.device)
+    partials = torch.empty(N // 64, M, dtype=FP32, device=x.device)
+    r = torch.empty(M, dtype=FP32, device=x.device)
+    with torch.cuda.device(x.device):                     # launch on x's GPU, on its current stream
+        stream = torch.cuda.current_stream(x.device).cuda_stream
+        importlib.import_module("tk_residual_rms").dispatch(x, w.tensor, h, residual, partials, stream)
+        importlib.import_module("tk_rms_reduce").dispatch(partials, r, stream)
+    return h, r
