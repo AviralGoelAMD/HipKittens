@@ -134,3 +134,24 @@ def test_inv_rms():
     assert ((got - want).abs() <= (64 + 16 + 4) * 2.0 ** -24 * want).all()
     with pytest.raises(ValueError):
         hk.inv_rms(a, weight(b, layout="rope"))
+
+
+@pytest.mark.skipif(torch.cuda.device_count() < 2, reason="needs 2 GPUs")
+def test_cross_device():
+    """GPU 0 current, every tensor on GPU 1: hk must launch on x's GPU and its current stream. Launching on
+    the current device's stream instead faults with hipErrorIllegalAddress (seen on 2x MI355X)."""
+    module("noop"), module("residual_add"), module("partialrms"), module("rms_reduce")
+    d0, d1 = torch.device("cuda", 0), torch.device("cuda", 1)
+    with torch.cuda.device(d0):
+        a, b = inputs(512, 512, 256, "random")
+        res = torch.randn(512, 512, generator=torch.Generator().manual_seed(5)).to(torch.bfloat16).to(d0)
+        a1, res1, w0, w1 = a.to(d1), res.to(d1), weight(b), weight(b.to(d1))
+        for ep, kw0, kw1 in ((None, {}, {}), ("residual_add", {"residual": res}, {"residual": res1})):
+            got = hk.matmul(a1, w1, epilogue=ep, **kw1)
+            assert got.device == d1
+            assert torch.equal(got.cpu(), hk.matmul(a, w0, epilogue=ep, **kw0).cpu())
+        assert torch.equal(hk.inv_rms(a1, w1).cpu(), hk.inv_rms(a, w0).cpu())
+        with pytest.raises(ValueError, match="same device as x"):
+            hk.matmul(a1, w1, epilogue="residual_add", residual=res)
+        with pytest.raises(ValueError, match="same device as x"):
+            hk.matmul(a1, w0)
