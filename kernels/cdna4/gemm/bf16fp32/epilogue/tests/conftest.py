@@ -16,9 +16,19 @@ import torch
 EPI = pathlib.Path(__file__).resolve().parents[1]   # kernels/cdna4/gemm/bf16fp32/epilogue
 BASE = EPI.parent                                    # kernels/cdna4/gemm/bf16fp32 (upstream base GEMM)
 DEV = "cuda"
+if str(EPI) not in sys.path:
+    sys.path.insert(0, str(EPI))                    # so tests can `import hk`
 
 SHAPES = [(256, 256, 128), (4096, 4096, 128), (8192, 2048, 4096), (4096, 4096, 4096)]  # (M, N, K)
 BAD_SHAPES = [(384, 256, 128), (256, 256, 192)]                                         # M % 256, K % 128
+
+
+def hk_shape_error(M, N, K):
+    """(exception, message) hk raises for a BAD_SHAPES case: hk.prepare (Python) checks K, launch (C++) checks M."""
+    if K % 128:
+        return ValueError, "K % 128 == 0"
+    return RuntimeError, "M and N must be multiples of 256"
+
 
 _modules = {}
 
@@ -37,6 +47,23 @@ def module(name):
             sys.path.insert(0, str(directory))
         _modules[name] = importlib.import_module(import_name)
     return _modules[name]
+
+
+def stream():
+    """torch's current stream, as the trailing argument every tk_<name>.dispatch takes."""
+    return torch.cuda.current_stream().cuda_stream
+
+
+def weight(b, layout="plain", gamma=None):
+    """hk-prepared weight from a test operand b [N, K] (hk.prepare takes the natural [K, N])."""
+    import hk
+    return hk.prepare(b.t().contiguous(), layout=layout, gamma=gamma)
+
+
+def pow2_gamma(K, seed=7):
+    """bf16 gamma of powers of two (0.5, 1, 2), so folding it into b keeps the GEMM exact."""
+    g = torch.Generator(device=DEV).manual_seed(seed)
+    return (2.0 ** torch.randint(-1, 2, (K,), generator=g, device=DEV).float()).to(torch.bfloat16)
 
 
 def inputs(M, N, K, kind, seed=0):

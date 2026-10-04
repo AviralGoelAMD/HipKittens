@@ -3,14 +3,13 @@ the kernel stores bf16 (to_bf16_chopped)."""
 import pytest
 import torch
 
-from conftest import BAD_SHAPES, DEV, SHAPES, assert_bitexact, gemm_exact, inputs, module
+import hk
+from conftest import BAD_SHAPES, DEV, SHAPES, assert_bitexact, gemm_exact, hk_shape_error, inputs, module, weight
 
 
 def run(a, b):
-    c = torch.empty(a.shape[0], b.shape[0], dtype=torch.bfloat16, device=DEV)
-    module("noop").dispatch(a, b, c)
-    torch.cuda.synchronize()
-    return c
+    module("noop")
+    return hk.matmul(a, weight(b))
 
 
 def reference(a, b):
@@ -33,20 +32,21 @@ def test_known_answer():
     a, _ = inputs(512, 256, 256, "random")
     eye = torch.eye(256, dtype=torch.bfloat16, device=DEV)
     assert torch.equal(run(a, eye), a)                       # a @ I.T == a
-    with pytest.raises(RuntimeError):                         # swapped operands break the shape check
-        module("noop").dispatch(eye, a, torch.empty(512, 256, dtype=torch.bfloat16, device=DEV))
+    with pytest.raises(TypeError):                            # an unprepared weight is refused
+        hk.matmul(a, eye)
 
 
 @pytest.mark.parametrize("M,N,K", BAD_SHAPES)
 def test_bad_shapes(M, N, K):
     a, b = inputs(M, N, K, "random")
-    with pytest.raises(RuntimeError):
+    exc, msg = hk_shape_error(M, N, K)
+    with pytest.raises(exc, match=msg):
         run(a, b)
 
 
 def test_rejects_wrong_dtype():
     a, b = inputs(256, 256, 128, "random")
-    with pytest.raises(RuntimeError, match="must be torch"):
+    with pytest.raises(ValueError, match="must be"):
         run(a.float(), b)
 
 

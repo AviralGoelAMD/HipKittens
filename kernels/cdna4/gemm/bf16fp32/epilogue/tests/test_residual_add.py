@@ -3,7 +3,8 @@ so c must be bit-identical to the reference stored the way the kernel stores bf1
 import pytest
 import torch
 
-from conftest import BAD_SHAPES, DEV, SHAPES, assert_bitexact, gemm_exact, inputs, module
+import hk
+from conftest import BAD_SHAPES, DEV, SHAPES, assert_bitexact, gemm_exact, hk_shape_error, inputs, module, weight
 
 
 def residual_like(M, N, scale, seed=3):
@@ -12,10 +13,8 @@ def residual_like(M, N, scale, seed=3):
 
 
 def run(a, b, residual):
-    c = torch.empty(a.shape[0], b.shape[0], dtype=torch.bfloat16, device=DEV)
-    module("residual_add").dispatch(a, b, c, residual)
-    torch.cuda.synchronize()
-    return c
+    module("residual_add")
+    return hk.matmul(a, weight(b), epilogue="residual_add", residual=residual)
 
 
 def reference(a, b, residual):
@@ -41,19 +40,20 @@ def test_known_answer():
     eye = torch.eye(256, dtype=torch.bfloat16, device=DEV)
     residual = torch.full((512, 256), 2.5, dtype=torch.bfloat16, device=DEV)
     c = run(a, eye, residual)
-    assert torch.equal(c, torch.full_like(c, 3.5))       # 1 + 2.5; a swapped c/residual leaves c unwritten
-    with pytest.raises(RuntimeError):
-        module("residual_add").dispatch(eye, a, torch.empty_like(c), residual)
+    assert torch.equal(c, torch.full_like(c, 3.5))       # 1 + 2.5
+    with pytest.raises(TypeError):                       # residual passed under the wrong name
+        hk.matmul(a, weight(eye), epilogue="residual_add", skip=residual)
 
 
 @pytest.mark.parametrize("M,N,K", BAD_SHAPES)
 def test_bad_shapes(M, N, K):
     a, b = inputs(M, N, K, "random")
-    with pytest.raises(RuntimeError):
+    exc, msg = hk_shape_error(M, N, K)
+    with pytest.raises(exc, match=msg):
         run(a, b, residual_like(M, N, 1.0))
 
 
 def test_rejects_wrong_dtype():
     a, b = inputs(256, 256, 128, "random")
-    with pytest.raises(RuntimeError, match="must be torch"):
+    with pytest.raises(ValueError, match="must be"):
         run(a, b, residual_like(256, 256, 1.0).float())

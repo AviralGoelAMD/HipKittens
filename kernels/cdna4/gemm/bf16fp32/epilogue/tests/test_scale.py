@@ -4,7 +4,8 @@ stores bf16 (to_bf16_chopped)."""
 import pytest
 import torch
 
-from conftest import BAD_SHAPES, DEV, SHAPES, assert_bitexact, gemm_exact, inputs, module
+import hk
+from conftest import BAD_SHAPES, DEV, SHAPES, assert_bitexact, gemm_exact, hk_shape_error, inputs, module, weight
 
 
 def alpha_tensor(value):
@@ -12,10 +13,8 @@ def alpha_tensor(value):
 
 
 def run(a, b, alpha):
-    c = torch.empty(a.shape[0], b.shape[0], dtype=torch.bfloat16, device=DEV)
-    module("scale").dispatch(a, b, c, alpha)
-    torch.cuda.synchronize()
-    return c
+    module("scale")
+    return hk.matmul(a, weight(b), epilogue="scale", alpha=alpha)
 
 
 def reference(a, b, alpha):
@@ -40,19 +39,19 @@ def test_known_answer():
     eye = torch.eye(256, dtype=torch.bfloat16, device=DEV)
     c = run(a, eye, alpha_tensor(0.5))
     assert torch.equal(c, torch.full_like(c, 0.5))            # 0.5, not 2.0: alpha multiplies
-    with pytest.raises(RuntimeError):
-        module("scale").dispatch(eye, a, torch.empty(512, 256, dtype=torch.bfloat16, device=DEV),
-                                 alpha_tensor(0.5))
+    with pytest.raises(TypeError):                            # an unprepared weight is refused
+        hk.matmul(a, eye, epilogue="scale", alpha=0.5)
 
 
 @pytest.mark.parametrize("M,N,K", BAD_SHAPES)
 def test_bad_shapes(M, N, K):
     a, b = inputs(M, N, K, "random")
-    with pytest.raises(RuntimeError):
+    exc, msg = hk_shape_error(M, N, K)
+    with pytest.raises(exc, match=msg):
         run(a, b, alpha_tensor(0.37))
 
 
 def test_rejects_wrong_dtype():
     a, b = inputs(256, 256, 128, "random")
-    with pytest.raises(RuntimeError, match="must be torch"):
+    with pytest.raises(ValueError, match="must be"):
         run(a, b, alpha_tensor(0.37).bfloat16())

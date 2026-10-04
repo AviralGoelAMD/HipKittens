@@ -3,12 +3,11 @@ permutes b's rows and cos_sin with rope_perm. The output store rounds to nearest
 v_cvt_pk_bf16_f32). Allowed difference (assert_rope_close): one bf16 step of the result plus the fp32
 rounding of the rotation's two products and sum, 4 * 2^-24 * (|x||cos| + |y||sin|), which only matters
 when the two products nearly cancel."""
-import math
-
 import pytest
 import torch
 
-from conftest import BAD_SHAPES, DEV, SHAPES, bf16_step, gemm_exact, inputs, module
+import hk
+from conftest import BAD_SHAPES, DEV, SHAPES, bf16_step, gemm_exact, hk_shape_error, inputs, module, stream, weight
 
 
 def rope_perm(N):
@@ -56,13 +55,9 @@ def assert_rope_close(got, h, cos_sin):
                              f"{got[i].item()!r}, want {want[i].item()!r}, magnitude {magnitude[i].item()!r}")
 
 
-def run(a, b, cos_sin, c=None):
-    perm = rope_perm(b.shape[0])
-    if c is None:
-        c = torch.empty(a.shape[0], b.shape[0], dtype=torch.bfloat16, device=DEV)
-    module("rope").dispatch(a, b[perm].contiguous(), c, cos_sin[:, perm].contiguous())
-    torch.cuda.synchronize()
-    return c
+def run(a, b, cos_sin):
+    module("rope")
+    return hk.matmul(a, weight(b, layout="rope"), epilogue="rope", cos_sin=hk.prepare_rope_table(cos_sin))
 
 
 @pytest.mark.parametrize("kind", ["random", "large"])
@@ -88,25 +83,27 @@ def test_known_answer():
     want = torch.empty_like(a)
     want[:, 0::2], want[:, 1::2] = a[:, 1::2], -a[:, 0::2]
     assert torch.equal(out, want)
-    with pytest.raises(RuntimeError):
-        module("rope").dispatch(eye, a, torch.empty(512, 256, dtype=torch.bfloat16, device=DEV), cs.to(torch.bfloat16))
+    with pytest.raises(TypeError):                       # an unprepared cos/sin table is refused
+        hk.matmul(a, weight(eye, layout="rope"), epilogue="rope", cos_sin=cs.to(torch.bfloat16))
 
 
 @pytest.mark.parametrize("M,N,K", BAD_SHAPES)
 def test_bad_shapes(M, N, K):
     a, b = inputs(M, N, K, "random")
-    with pytest.raises(RuntimeError):
+    exc, msg = hk_shape_error(M, N, K)
+    with pytest.raises(exc, match=msg):
         run(a, b, cos_sin_table(M, N))
 
 
 def test_rejects_wrong_dtype():
     a, b = inputs(256, 256, 128, "random")
-    with pytest.raises(RuntimeError, match="must be torch"):
+    with pytest.raises(ValueError, match="must be"):
         run(a, b, cos_sin_table(256, 256).float())
 
 
 def test_rejects_misaligned_output():
     a, b = inputs(256, 256, 128, "random")
     misaligned = torch.empty(256 * 256 + 1, dtype=torch.bfloat16, device=DEV)[1:].view(256, 256)
+    perm = rope_perm(256)                                # hk always allocates aligned output: call the binding
     with pytest.raises(RuntimeError, match="4-byte alignment"):
-        run(a, b, cos_sin_table(256, 256), c=misaligned)
+        module("rope").dispatch(a, b[perm].contiguous(), misaligned, cos_sin_table(256, 256)[:, perm].contiguous(), stream())

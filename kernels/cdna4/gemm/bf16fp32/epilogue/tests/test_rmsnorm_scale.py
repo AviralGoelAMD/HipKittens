@@ -4,7 +4,8 @@ reference stored the way the kernel stores bf16 (to_bf16_chopped)."""
 import pytest
 import torch
 
-from conftest import BAD_SHAPES, DEV, SHAPES, assert_bitexact, gemm_exact, inputs, module
+import hk
+from conftest import BAD_SHAPES, DEV, SHAPES, assert_bitexact, gemm_exact, hk_shape_error, inputs, module, weight
 
 
 def vectors(M, N, seed=2):
@@ -16,10 +17,8 @@ def vectors(M, N, seed=2):
 
 
 def run(a, b, r, gamma):
-    c = torch.empty(a.shape[0], b.shape[0], dtype=torch.bfloat16, device=DEV)
-    module("rmsnorm_scale").dispatch(a, b, c, r, gamma)
-    torch.cuda.synchronize()
-    return c
+    module("rmsnorm_scale")
+    return hk.matmul(a, weight(b), epilogue="rmsnorm_scale", r=r, gamma=gamma)
 
 
 def reference(a, b, r, gamma):
@@ -47,19 +46,20 @@ def test_known_answer():
     gamma = torch.tensor([4.0, 8.0], device=DEV).repeat(128).to(torch.bfloat16)    # alternates per column
     c = run(a, eye, r, gamma)
     assert torch.equal(c, (r[:, None] * gamma.float()[None, :]).to(torch.bfloat16))
-    with pytest.raises(RuntimeError):                    # r and gamma swapped: wrong dtypes and shapes
-        module("rmsnorm_scale").dispatch(a, eye, torch.empty_like(c), gamma, r)
+    with pytest.raises(ValueError):                      # r and gamma swapped: wrong dtypes and shapes
+        hk.matmul(a, weight(eye), epilogue="rmsnorm_scale", r=gamma, gamma=r)
 
 
 @pytest.mark.parametrize("M,N,K", BAD_SHAPES)
 def test_bad_shapes(M, N, K):
     a, b = inputs(M, N, K, "random")
-    with pytest.raises(RuntimeError):
+    exc, msg = hk_shape_error(M, N, K)
+    with pytest.raises(exc, match=msg):
         run(a, b, *vectors(M, N))
 
 
 def test_rejects_wrong_dtype():
     a, b = inputs(256, 256, 128, "random")
     r, gamma = vectors(256, 256)
-    with pytest.raises(RuntimeError, match="must be torch"):
+    with pytest.raises(ValueError, match="must be"):
         run(a, b, r.bfloat16(), gamma)
