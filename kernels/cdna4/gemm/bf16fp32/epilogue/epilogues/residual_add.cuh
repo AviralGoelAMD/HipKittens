@@ -9,8 +9,7 @@ struct ResidualAddGlobals {
 };
 struct ResidualAddEpilogue {
     // One sub-tile at a time: load its residual, add, store, then move on. Storing each sub-tile as
-    // soon as it is done ends its live range early; adding into all four first needed 256 VGPRs and
-    // spilled 16. The store of one sub-tile and the load of the next are independent.
+    // soon as it is done ends its live range early.
     template<typename Globals, typename Accum>
     static __device__ inline void apply(const Globals& g, Accum& C, int row, int col, int wr, int wc) {
         using Tile = std::remove_all_extents_t<Accum>;
