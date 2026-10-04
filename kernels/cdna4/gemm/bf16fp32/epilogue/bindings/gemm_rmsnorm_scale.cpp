@@ -13,8 +13,8 @@ void dispatch(RMSNormScaleGlobals g) {
 
 PYBIND11_MODULE(TK_MODULE_NAME, m) {
     m.doc() = "GEMM + RMSNorm scale: c = (a @ b.T) * r[:, None] * gamma[None, :], a = [M,K], b = [N,K], "
-              "c = [M,N], r = [M], gamma = [N] (all bf16)";
-    bind_checked<dispatch>(m, "dispatch", {tensor_dtype::bf16, tensor_dtype::bf16, tensor_dtype::bf16, tensor_dtype::bf16, tensor_dtype::bf16},
+              "c = [M,N] (bf16), r = [M] (fp32), gamma = [N] (bf16)";
+    bind_checked<dispatch>(m, "dispatch", {tensor_dtype::bf16, tensor_dtype::bf16, tensor_dtype::bf16, tensor_dtype::fp32, tensor_dtype::bf16},
         &RMSNormScaleGlobals::a, &RMSNormScaleGlobals::b, &RMSNormScaleGlobals::c,
         &RMSNormScaleGlobals::r, &RMSNormScaleGlobals::gamma);
 }

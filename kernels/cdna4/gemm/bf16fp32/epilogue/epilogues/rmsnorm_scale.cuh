@@ -6,7 +6,7 @@
 // 1/rms and gamma the per-feature weight. The kernel multiplies by r first, then by gamma.
 struct RMSNormScaleGlobals {
     _gl_A a; _gl_B b; _gl_C c;
-    gl<bf16, -1, -1, -1, -1> r;       // [M] bf16; as a 4-D gl: [1, 1, 1, M]
+    gl<float, -1, -1, -1, -1> r;      // [M] fp32; as a 4-D gl: [1, 1, 1, M]
     gl<bf16, -1, -1, -1, -1> gamma;   // [N] bf16; as a 4-D gl: [1, 1, 1, N]
 };
 struct RMSNormScaleEpilogue {

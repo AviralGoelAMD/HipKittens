@@ -6,7 +6,7 @@
 // a col_vec and is applied with mul_row; a per-COLUMN value (one per output feature, e.g. gamma)
 // lives in a row_vec and is applied with mul_col. The vector kind names its shape, not what it scales.
 
-// C[m, :] *= r[m]. r is bf16 [1, 1, 1, M] (M on the last axis); a col_vec loads by its last-axis index.
+// C[m, :] *= r[m]. r is fp32 [1, 1, 1, M] (M on the last axis); a col_vec loads by its last-axis index.
 template<typename Globals, typename Accum>
 __device__ inline void apply_inv_rms(const Globals& g, Accum& C, int row, int col, int wr, int wc) {
     using Tile = std::remove_all_extents_t<Accum>;

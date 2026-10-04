@@ -9,7 +9,7 @@
 // SwiGLU (epilogues/swiglu.cuh), so gate and value are register-co-resident.
 struct RmsnormSwigluGlobals {
     _gl_A a; _gl_B b; _gl_C c;
-    gl<bf16, -1, -1, -1, -1> r;   // [M] bf16; as a 4-D gl: [1, 1, 1, M]
+    gl<float, -1, -1, -1, -1> r;  // [M] fp32; as a 4-D gl: [1, 1, 1, M]
 };
 struct RmsnormSwigluEpilogue {
     static constexpr int out_cols(int n) { return n / 2; }

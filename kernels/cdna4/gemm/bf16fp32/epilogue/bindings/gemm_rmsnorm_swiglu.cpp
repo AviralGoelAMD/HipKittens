@@ -12,7 +12,7 @@ void dispatch(RmsnormSwigluGlobals g) {
 PYBIND11_MODULE(TK_MODULE_NAME, m) {
     m.doc() = "GEMM + RMSNorm + SwiGLU: c = silu(gate) * value with [gate | value] = r[:, None] * (a @ b.T); "
               "a = [M,K], b = [N,K] gamma-folded and row-permuted (see epilogues/rmsnorm_swiglu.cuh), "
-              "c = [M,N/2], r = [M] (all bf16)";
-    bind_checked<dispatch>(m, "dispatch", {tensor_dtype::bf16, tensor_dtype::bf16, tensor_dtype::bf16, tensor_dtype::bf16},
+              "c = [M,N/2] (bf16), r = [M] (fp32)";
+    bind_checked<dispatch>(m, "dispatch", {tensor_dtype::bf16, tensor_dtype::bf16, tensor_dtype::bf16, tensor_dtype::fp32},
         &RmsnormSwigluGlobals::a, &RmsnormSwigluGlobals::b, &RmsnormSwigluGlobals::c, &RmsnormSwigluGlobals::r);
 }
