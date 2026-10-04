@@ -1,11 +1,12 @@
 #pragma once
 #include <array>
+#include <cstdint>
 #include <stdexcept>
 #include <string>
 #include "pyutils/pyutils.cuh"
 
 // Like kittens::py::bind_function, but raises unless each tensor argument has the expected torch
-// dtype. Without it a bf16 tensor passed where fp32 is expected (or the reverse) is silently
+// dtype, and takes the HIP stream to launch on as a trailing integer (torch's .cuda_stream). Without it a bf16 tensor passed where fp32 is expected (or the reverse) is silently
 // reinterpreted: from_object reads only the data pointer and the shape.
 enum class tensor_dtype { bf16, fp32 };
 
@@ -28,10 +29,10 @@ inline void require_dtype(const pybind11::object& t, tensor_dtype expected, size
 template<auto function, typename TGlobal, typename... MT>
 void bind_checked(pybind11::module_& m, const char* name,
                   std::array<tensor_dtype, sizeof...(MT)> dtypes, MT TGlobal::*... members) {
-    m.def(name, [dtypes](kittens::py::object<MT>... args) {
+    m.def(name, [dtypes](kittens::py::object<MT>... args, std::uintptr_t stream) {
         size_t i = 0;
         ((require_dtype(args, dtypes[i], i), ++i), ...);
         TGlobal g{kittens::py::from_object<MT>::make(args)...};
-        function(g);
+        function(g, reinterpret_cast<hipStream_t>(stream));
     });
 }
