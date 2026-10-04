@@ -3,22 +3,12 @@
 #include <type_traits>
 #include "base.cuh"
 
-// Interleaved RoPE on the accumulator, stored in natural column order.
-//
-// The caller permutes the weight's columns (B's rows) AND cos_sin with rope_perm: feature pair
-// k = (2k, 2k+1) moves to columns (c, c + 128) of 256-column block b, where b = k / 128 and c = k % 128.
-// Each thread then holds the pair's even member x in C[i][0] and its odd member y in C[i][1], and
-// cos_k / sin_k load at the same coordinates. The rotation is register-only:
-//   out[2k]   = x * cos_k + y * sin_k
-//   out[2k+1] = y * cos_k - x * sin_k
-// Each rotated pair is converted with v_cvt_pk_bf16_f32 (round to nearest) and written as one 32-bit
-// word at its natural columns (2k, 2k+1), so c must be 4-byte aligned. One row sub-tile is rotated and
-// stored at a time, which ends its live range early.
-//
-// Lane mapping (rt_16x16_s, col_l): lane L owns column L % 16 and rows 4 * (L / 16) .. +3 of each
-// 16x16 base tile, and each float2 register holds two consecutive rows. Matching registers of C[i][0]
-// and C[i][1] therefore hold the even and odd member of the same pair, k = col*128 + wc*32 + j*16 + L%16.
-// No typed tile store can interleave two source tiles, so the packed word goes through g.c.raw_ptr.
+// Interleaved RoPE: out[2k] = x*cos + y*sin, out[2k+1] = y*cos - x*sin, stored in natural column order.
+// The caller permutes B's rows and cos_sin with rope_perm (pair k -> columns k%128 and k%128 + 128 of
+// 256-column block k/128), so x is in C[i][0] and y in C[i][1] of the same thread.
+// Each rotated pair is written as one round-to-nearest bf16x2 word at columns (2k, 2k+1); c must be
+// 4-byte aligned. Lane L of a 16x16 base tile owns column L%16, so its pair is
+// k = col*128 + wc*32 + j*16 + L%16.
 template<typename Globals, typename Accum>
 __device__ inline void apply_rope_store_natural(const Globals& g, Accum& C, int row, int col, int wr, int wc) {
     using Tile = std::remove_all_extents_t<Accum>;
