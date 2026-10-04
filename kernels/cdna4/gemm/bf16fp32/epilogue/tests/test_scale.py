@@ -52,7 +52,6 @@ def test_bad_shapes(M, N, K):
         run(a, b, alpha_tensor(0.37))
 
 
-@pytest.mark.xfail(strict=True, reason="bindings check dtypes from Phase 2 task 7")
 def test_rejects_wrong_dtype():
     a, b = inputs(256, 256, 128, "random")
     with pytest.raises(RuntimeError, match="must be torch"):
