@@ -1,6 +1,4 @@
 #pragma once
-#include <stdexcept>
-#include <string>
 #include "base.cuh"
 
 using G = kittens::group<NUM_WARPS>;
@@ -296,11 +294,6 @@ void gemm_kernel(const Globals g, int M, int N, int K) {
     }
 
     Epilogue::apply(g, C_accum, row, col, warp_row, warp_col);
-}
-
-// Throw on a HIP error so Python sees a RuntimeError. (HK's CHECK_CUDA_ERROR only prints to stderr.)
-inline void hip_check(hipError_t err, const char* what) {
-    if (err != hipSuccess) throw std::runtime_error(std::string(what) + ": " + hipGetErrorString(err));
 }
 
 // Check shapes, then launch gemm_kernel<Epilogue>. a = [M,K], b = [N,K], c = [M,N]

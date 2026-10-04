@@ -1,4 +1,6 @@
 #pragma once
+#include <stdexcept>
+#include <string>
 #include "kittens.cuh"
 using namespace kittens;
 
@@ -31,3 +33,8 @@ struct gemm_args_base {
     _gl_B b;
     _gl_C c;
 };
+
+// Throw on a HIP error so Python sees a RuntimeError. (HK's CHECK_CUDA_ERROR only prints to stderr.)
+inline void hip_check(hipError_t err, const char* what) {
+    if (err != hipSuccess) throw std::runtime_error(std::string(what) + ": " + hipGetErrorString(err));
+}
