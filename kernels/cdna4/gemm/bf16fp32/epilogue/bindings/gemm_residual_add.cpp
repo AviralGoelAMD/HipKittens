@@ -3,10 +3,10 @@
 #include "pyutils/pyutils.cuh"
 #include "checked_bind.cuh"
 
-void dispatch(ResidualAddGlobals g) {
+void dispatch(ResidualAddGlobals g, hipStream_t stream) {
     if (g.residual.rows() != g.a.rows() || g.residual.cols() != g.b.rows())
         throw std::runtime_error("residual_add: residual must be [M, N] (M = a.rows(), N = b.rows())");
-    launch<ResidualAddEpilogue, ResidualAddGlobals>(g);
+    launch<ResidualAddEpilogue, ResidualAddGlobals>(g, stream);
 }
 
 PYBIND11_MODULE(TK_MODULE_NAME, m) {

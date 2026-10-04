@@ -3,12 +3,12 @@
 #include "pyutils/pyutils.cuh"
 #include "checked_bind.cuh"
 
-void dispatch(RMSNormScaleGlobals g) {
+void dispatch(RMSNormScaleGlobals g, hipStream_t stream) {
     if (g.r.rows() != 1 || g.r.cols() != g.a.rows())
         throw std::runtime_error("rmsnorm_scale: r must be [M] (M = a.rows())");
     if (g.gamma.rows() != 1 || g.gamma.cols() != g.b.rows())
         throw std::runtime_error("rmsnorm_scale: gamma must be [N] (N = b.rows())");
-    launch<RMSNormScaleEpilogue, RMSNormScaleGlobals>(g);
+    launch<RMSNormScaleEpilogue, RMSNormScaleGlobals>(g, stream);
 }
 
 PYBIND11_MODULE(TK_MODULE_NAME, m) {

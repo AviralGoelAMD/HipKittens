@@ -4,14 +4,14 @@
 #include "pyutils/pyutils.cuh"
 #include "checked_bind.cuh"
 
-void dispatch(RmsnormRopeGlobals g) {
+void dispatch(RmsnormRopeGlobals g, hipStream_t stream) {
     if (g.r.rows() != 1 || g.r.cols() != g.a.rows())
         throw std::runtime_error("rmsnorm_rope: r must be [M] (M = a.rows())");
     if (g.cos_sin.rows() != g.a.rows() || g.cos_sin.cols() != g.b.rows())
         throw std::runtime_error("rmsnorm_rope: cos_sin must be [M, N] (M = a.rows(), N = b.rows())");
     if (reinterpret_cast<uintptr_t>(g.c.raw_ptr) % alignof(bf16_2) != 0)
         throw std::runtime_error("rmsnorm_rope: output must have 4-byte alignment");
-    launch<RmsnormRopeEpilogue, RmsnormRopeGlobals>(g);
+    launch<RmsnormRopeEpilogue, RmsnormRopeGlobals>(g, stream);
 }
 
 PYBIND11_MODULE(TK_MODULE_NAME, m) {

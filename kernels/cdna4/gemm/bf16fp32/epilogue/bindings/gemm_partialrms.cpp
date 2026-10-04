@@ -3,10 +3,10 @@
 #include "pyutils/pyutils.cuh"
 #include "checked_bind.cuh"
 
-void dispatch(PartialRMSGlobals g) {
+void dispatch(PartialRMSGlobals g, hipStream_t stream) {
     if (g.partials.cols() != g.a.rows() || g.partials.rows() != g.b.rows() / REG_BLOCK_N)
         throw std::runtime_error("partialrms: partials must be [N/64, M] fp32 (N = b.rows(), M = a.rows())");
-    launch<PartialRMSEpilogue, PartialRMSGlobals>(g);
+    launch<PartialRMSEpilogue, PartialRMSGlobals>(g, stream);
 }
 
 PYBIND11_MODULE(TK_MODULE_NAME, m) {

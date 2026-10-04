@@ -2,7 +2,7 @@
 #include "pyutils/pyutils.cuh"
 #include "checked_bind.cuh"
 
-void dispatch(RmsReduceGlobals g) {
+void dispatch(RmsReduceGlobals g, hipStream_t stream) {
     const int M = g.r.cols();
     if (g.r.rows() != 1)
         throw std::runtime_error("rms_reduce: r must be [M]");
@@ -10,7 +10,7 @@ void dispatch(RmsReduceGlobals g) {
         throw std::runtime_error("rms_reduce: partials must be [N/64, M] with M = r's length");
     constexpr int THREADS = 256;                             // 4 wavefronts per block, one row each
     const long long total = (long long)M * kittens::WARP_THREADS;
-    rms_reduce<<<(int)((total + THREADS - 1) / THREADS), THREADS>>>(g.partials, g.r);
+    rms_reduce<<<(int)((total + THREADS - 1) / THREADS), THREADS, 0, stream>>>(g.partials, g.r);
     hip_check(hipGetLastError(), "rms_reduce launch");
 }
 

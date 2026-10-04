@@ -3,7 +3,7 @@
 #include "pyutils/pyutils.cuh"
 #include "checked_bind.cuh"
 
-void dispatch(gemm_args_base g) { launch<SiluEpilogue, gemm_args_base>(g); }
+void dispatch(gemm_args_base g, hipStream_t stream) { launch<SiluEpilogue, gemm_args_base>(g, stream); }
 
 PYBIND11_MODULE(TK_MODULE_NAME, m) {
     m.doc() = "GEMM + SiLU: c = silu(a @ b.T), with a = [M,K], b = [N,K], c = [M,N] (bf16)";

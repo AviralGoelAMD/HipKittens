@@ -4,12 +4,12 @@
 #include "pyutils/pyutils.cuh"
 #include "checked_bind.cuh"
 
-void dispatch(RopeGlobals g) {
+void dispatch(RopeGlobals g, hipStream_t stream) {
     if (g.cos_sin.rows() != g.a.rows() || g.cos_sin.cols() != g.b.rows())
         throw std::runtime_error("rope: cos_sin must be [M, N] (M = a.rows(), N = b.rows())");
     if (reinterpret_cast<uintptr_t>(g.c.raw_ptr) % alignof(bf16_2) != 0)
         throw std::runtime_error("rope: output must have 4-byte alignment");
-    launch<RopeEpilogue, RopeGlobals>(g);
+    launch<RopeEpilogue, RopeGlobals>(g, stream);
 }
 
 PYBIND11_MODULE(TK_MODULE_NAME, m) {

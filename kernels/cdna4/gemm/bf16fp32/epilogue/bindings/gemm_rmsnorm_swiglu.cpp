@@ -3,10 +3,10 @@
 #include "pyutils/pyutils.cuh"
 #include "checked_bind.cuh"
 
-void dispatch(RmsnormSwigluGlobals g) {
+void dispatch(RmsnormSwigluGlobals g, hipStream_t stream) {
     if (g.r.rows() != 1 || g.r.cols() != g.a.rows())
         throw std::runtime_error("rmsnorm_swiglu: r must be [M] (M = a.rows())");
-    launch<RmsnormSwigluEpilogue, RmsnormSwigluGlobals>(g);
+    launch<RmsnormSwigluEpilogue, RmsnormSwigluGlobals>(g, stream);
 }
 
 PYBIND11_MODULE(TK_MODULE_NAME, m) {

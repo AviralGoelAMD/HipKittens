@@ -3,7 +3,7 @@
 #include "pyutils/pyutils.cuh"
 #include "checked_bind.cuh"
 
-void dispatch(gemm_args_base g) { launch<SwigluEpilogue, gemm_args_base>(g); }
+void dispatch(gemm_args_base g, hipStream_t stream) { launch<SwigluEpilogue, gemm_args_base>(g, stream); }
 
 PYBIND11_MODULE(TK_MODULE_NAME, m) {
     m.doc() = "GEMM + SwiGLU: c = silu(gate) * value, a = [M,K], b = [N,K] with rows permuted "

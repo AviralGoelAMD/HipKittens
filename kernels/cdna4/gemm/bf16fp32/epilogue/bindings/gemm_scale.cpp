@@ -3,7 +3,7 @@
 #include "pyutils/pyutils.cuh"
 #include "checked_bind.cuh"
 
-void dispatch(ScaleGlobals g) { launch<ScaleEpilogue, ScaleGlobals>(g); }
+void dispatch(ScaleGlobals g, hipStream_t stream) { launch<ScaleEpilogue, ScaleGlobals>(g, stream); }
 
 PYBIND11_MODULE(TK_MODULE_NAME, m) {
     m.doc() = "GEMM + scale: c = alpha * (a @ b.T), with a = [M,K], b = [N,K], c = [M,N] (bf16), "
