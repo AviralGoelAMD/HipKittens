@@ -5,6 +5,7 @@ Prepare static weights once, then call:
     w  = hk.prepare(W, layout="swiglu", gamma=g)        # W: natural [K, N] bf16
     cs = hk.prepare_rope_table(cos_sin)                  # natural [M, N] bf16 [cos, sin] table
     y  = hk.matmul(x, w, epilogue="rmsnorm_swiglu", r=r)
+    v  = hk.matmul(x, hk.prepare(Wv, gamma=g), epilogue="rmsnorm", r=r)   # rmsnorm(x, g) @ Wv
     r  = hk.inv_rms(x, hk.prepare(W2))                   # [M] fp32 = 1 / rms(x @ W2)
     h, r = hk.residual_rms(x, hk.prepare(Wo), residual)  # h = x @ Wo + residual, r = 1 / rms(h)
     hk.available()                                       # {epilogue: [argument names]}
@@ -43,6 +44,7 @@ class _Spec:
     layout: str = "plain"
     gamma_folded: bool = False
     half_width: bool = False
+    unit_gamma: bool = False     # the kernel takes an output-column gamma; pass ones (gamma is folded into w)
 
 
 _EPILOGUES = {
@@ -51,11 +53,28 @@ _EPILOGUES = {
     "scale":          _Spec("tk_scale", (("alpha", "scalar"),)),
     "residual_add":   _Spec("tk_residual_add", (("residual", "tile"),)),
     "rmsnorm_scale":  _Spec("tk_rmsnorm_scale", (("r", "row"), ("gamma", "col"))),
+    "rmsnorm":        _Spec("tk_rmsnorm_scale", (("r", "row"),), gamma_folded=True, unit_gamma=True),
     "swiglu":         _Spec("tk_swiglu", layout="swiglu", half_width=True),
     "rmsnorm_swiglu": _Spec("tk_rmsnorm_swiglu", (("r", "row"),), layout="swiglu", gamma_folded=True, half_width=True),
     "rope":           _Spec("tk_rope", (("cos_sin", "rope"),), layout="rope"),
     "rmsnorm_rope":   _Spec("tk_rmsnorm_rope", (("r", "row"), ("cos_sin", "rope")), layout="rope", gamma_folded=True),
 }
+
+_ONES = {}
+
+
+def _ones(n, device):
+    """bf16 ones [n] on device, made once. Not cached while a CUDA graph is capturing: a tensor made during
+    capture is only filled when the graph replays. The first eager fill is synchronized so a later call on
+    another stream cannot read it early."""
+    key = (n, device)
+    if key not in _ONES:
+        t = torch.ones(n, dtype=BF16, device=device)
+        if torch.cuda.is_current_stream_capturing():
+            return t
+        torch.cuda.current_stream(device).synchronize()
+        _ONES[key] = t
+    return _ONES[key]
 
 
 def available():
@@ -180,6 +199,8 @@ def matmul(x, w, epilogue=None, **args):
     out = torch.empty(M, N // 2 if spec.half_width else N, dtype=BF16, device=x.device)
     with torch.cuda.device(x.device):                     # launch on x's GPU, on its current stream
         stream = torch.cuda.current_stream(x.device).cuda_stream
+        if spec.unit_gamma:
+            values.append(_ones(N, x.device))
         importlib.import_module(spec.module).dispatch(x, w.tensor, out, *values, stream)
     return out
 
