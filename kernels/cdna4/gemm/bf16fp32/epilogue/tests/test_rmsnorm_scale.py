@@ -1,11 +1,15 @@
 """tk_rmsnorm_scale: c = (a @ b.T) * r[:, None] * gamma[None, :] (bf16), r = [M] fp32, gamma = [N] bf16.
 The kernel multiplies by r, then by gamma, each one IEEE fp32 multiply, so c must be bit-identical to the
-reference stored the way the kernel stores bf16 (to_bf16_chopped)."""
+reference stored the way the kernel stores bf16 (to_bf16_chopped).
+
+hk's "rmsnorm" epilogue runs the same kernel with the norm's gamma folded into b and ones as the column
+gamma: c = r[:, None] * (a @ (gamma * b).T), i.e. rmsnorm(a, gamma) @ b.T (the V projection)."""
 import pytest
 import torch
 
 import hk
-from conftest import BAD_SHAPES, DEV, SHAPES, assert_bitexact, gemm_exact, hk_shape_error, inputs, module, weight
+from conftest import (BAD_SHAPES, DEV, SHAPES, assert_bitexact, gemm_exact, hk_shape_error, inputs, module,
+                      pow2_gamma, weight)
 
 
 def vectors(M, N, seed=2):
@@ -63,3 +67,23 @@ def test_rejects_wrong_dtype():
     r, gamma = vectors(256, 256)
     with pytest.raises(ValueError, match="must be"):
         run(a, b, r.bfloat16(), gamma)
+
+
+@pytest.mark.parametrize("M,N,K", SHAPES)
+def test_rmsnorm_folded(M, N, K):
+    a, b = inputs(M, N, K, "random")
+    r, _ = vectors(M, N)
+    gamma = pow2_gamma(K)
+    module("rmsnorm_scale")
+    c = hk.matmul(a, weight(b, gamma=gamma), epilogue="rmsnorm", r=r)
+    folded = (b.float() * gamma.float()[None, :]).to(torch.bfloat16)   # gamma scales b's K axis
+    assert_bitexact(c, gemm_exact(a, folded) * r[:, None])            # times ones: unchanged
+
+
+def test_rmsnorm_needs_folded_weight():
+    a, b = inputs(256, 256, 128, "random")
+    r, gamma = vectors(256, 256)
+    with pytest.raises(ValueError, match="gamma folded in"):
+        hk.matmul(a, weight(b), epilogue="rmsnorm", r=r)
+    with pytest.raises(TypeError, match="takes arguments"):            # gamma lives in the weight, not here
+        hk.matmul(a, weight(b, gamma=pow2_gamma(128)), epilogue="rmsnorm", r=r, gamma=gamma)

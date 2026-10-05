@@ -7,14 +7,15 @@ from conftest import DEV, assert_bitexact, gemm_exact, inputs, module, pow2_gamm
 from test_rope import rope_perm
 from test_swiglu import permute as swiglu_permute
 
-MATMUL_EPILOGUES = {"noop", "silu", "scale", "residual_add", "rmsnorm_scale", "swiglu", "rmsnorm_swiglu",
+MATMUL_EPILOGUES = {"noop", "silu", "scale", "residual_add", "rmsnorm_scale", "rmsnorm", "swiglu", "rmsnorm_swiglu",
                     "rope", "rmsnorm_rope"}
 
 
 def test_available():
     av = hk.available()
     assert set(av) == MATMUL_EPILOGUES
-    assert av["rmsnorm_scale"] == ["r", "gamma"] and av["rmsnorm_rope"] == ["r", "cos_sin"] and av["noop"] == []
+    assert av["rmsnorm_scale"] == ["r", "gamma"] and av["rmsnorm"] == ["r"] and av["noop"] == []
+    assert av["rmsnorm_rope"] == ["r", "cos_sin"]
 
 
 def test_prepare_matches_hand_layout():
@@ -123,6 +124,29 @@ def test_graph_capture():
     graph.replay()
     torch.cuda.synchronize()
     assert_bitexact(static_out, gemm_exact(a2, b))
+
+
+def test_rmsnorm_ones_made_under_capture():
+    """"rmsnorm" passes the kernel a ones vector. Made for the first time during capture, it is only
+    filled when the graph replays, so it must not be cached: an eager call before any replay would read
+    an unfilled buffer."""
+    module("rmsnorm_scale")
+    a, b = inputs(256, 768, 128, "random")                       # N = 768: a size no other test uses
+    gamma = pow2_gamma(128)
+    w = weight(b, gamma=gamma)
+    r = torch.full((256,), 0.5, device=DEV)
+    want = gemm_exact(a, (b.float() * gamma.float()[None, :]).to(torch.bfloat16)) * 0.5
+    ones = torch.ones(768, dtype=torch.bfloat16, device=DEV)
+    hk.matmul(a, weight(b), epilogue="rmsnorm_scale", r=r, gamma=ones)   # warm-up without making hk's ones
+    hk._ONES.pop((768, a.device), None)
+    torch.cuda.synchronize()
+    graph = torch.cuda.CUDAGraph()
+    with torch.cuda.graph(graph):
+        static_out = hk.matmul(a, w, epilogue="rmsnorm", r=r)
+    assert_bitexact(hk.matmul(a, w, epilogue="rmsnorm", r=r), want)  # eager, before the graph ever replays
+    graph.replay()
+    torch.cuda.synchronize()
+    assert_bitexact(static_out, want)
 
 
 def test_inv_rms():
