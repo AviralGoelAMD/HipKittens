@@ -6,7 +6,7 @@
           boundaries. Also prints the compiled full layer minus the sum of the separately compiled phases
           (negative = what cross-phase fusion buys torch). --full times the phases too, for that line.
 
-Phases (HK launches): qkv (3), attention (1), out_proj (2), gate_up (1), down (2).
+Phases (HK launches): qkv (4: one hk.qkv GEMM + 3 copies), attention (1), out_proj (2), gate_up (1), down (2).
 HK splits RMSNorm across phases: the producer emits r = 1/rms, the consumer applies it. Torch normalizes in
 the consumer and computes r_next at the end of the layer, so each side does each RMS reduction once. The
 HK layer's input r_attn = 1/rms(x) is computed once, outside timing (a previous layer would emit it).
@@ -25,8 +25,8 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 import common
 import hk
 
-MODULES = ["rmsnorm_rope", "rmsnorm_scale", "residual_rms", "rms_reduce", "rmsnorm_swiglu"]
-HK_LAUNCHES = dict(qkv=3, attention=1, out_proj=2, gate_up=1, down=2)
+MODULES = ["rmsnorm_rope", "residual_rms", "rms_reduce", "rmsnorm_swiglu"]
+HK_LAUNCHES = dict(qkv=4, attention=1, out_proj=2, gate_up=1, down=2)
 COMPILE = dict(mode="max-autotune-no-cudagraphs", dynamic=False)
 
 
@@ -73,20 +73,15 @@ class Layer:
         self.x = common.activation(M, d)
         self.cs = common.rope_table(M, self.Dh)                     # one head's table [M, Dh]
         W, ga, gm = self.W, self.g_attn, self.g_mlp
-        self.P = dict(q=hk.prepare(W["q"], layout="rope", gamma=ga), k=hk.prepare(W["k"], layout="rope", gamma=ga),
-                      v=hk.prepare(W["v"], gamma=ga), o=hk.prepare(W["o"]),
-                      gu=hk.prepare(W["gu"], layout="swiglu", gamma=gm), dn=hk.prepare(W["dn"]))
-        self.cs_q = hk.prepare_rope_table(self.cs.repeat(1, self.H))
-        self.cs_k = hk.prepare_rope_table(self.cs.repeat(1, self.H_KV))
+        self.Pqkv = hk.prepare_qkv(W["q"], W["k"], W["v"], gamma=ga)
+        self.P = dict(o=hk.prepare(W["o"]), gu=hk.prepare(W["gu"], layout="swiglu", gamma=gm), dn=hk.prepare(W["dn"]))
+        self.cs_qkv = hk.prepare_qkv_rope_table(self.cs.repeat(1, self.H), self.cs.repeat(1, self.H_KV))
         self.r_attn = common.inv_rms(self.x)
         self.gqa, self.native_gqa = gqa, native_gqa
 
     # ---- HK phases ----
     def hk_qkv(self, x, r):
-        q = hk.matmul(x, self.P["q"], "rmsnorm_rope", r=r, cos_sin=self.cs_q)
-        k = hk.matmul(x, self.P["k"], "rmsnorm_rope", r=r, cos_sin=self.cs_k)
-        v = hk.matmul(x, self.P["v"], "rmsnorm", r=r)
-        return q, k, v
+        return hk.qkv(x, self.Pqkv, r=r, cos_sin=self.cs_qkv)
 
     def hk_attention(self, q, k, v):
         M, H, H_KV, Dh = self.M, self.H, self.H_KV, self.Dh

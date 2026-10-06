@@ -92,8 +92,8 @@ Both Llama-3.1 models fit on one MI355X (288 GB), so the shapes are unsharded (n
 
 | # | Phase | HK | PyTorch |
 |---|---|---|---|
-| 1 | qkv | `rmsnorm_rope` (Wq, Wk) + `rmsnorm` (Wv): 3 launches | `rms_norm`, three matmuls, RoPE on q and k |
-| 2 | attention | `gqa_causal` on views of q, k, v | transposes, then SDPA |
+| 1 | qkv | `hk.qkv`: one `rmsnorm_rope` GEMM over `[Wq ∣ Wk ∣ Wv]` + 3 copies (4 launches) | `rms_norm`, three matmuls, RoPE on q and k |
+| 2 | attention | `gqa_causal` on contiguous q, k, v | transposes, then SDPA |
 | 3 | out_proj | `residual_rms(o, Wo, x)`: 2 launches | `x + o @ Wo` |
 | 4 | gate_up | `rmsnorm_swiglu`: 1 launch | `rms_norm`, matmul, `silu(gate) * up` |
 | 5 | down | `residual_rms(g, Wd, h)`: 2 launches | `h + g @ Wd`, then 1/rms for the next layer |
