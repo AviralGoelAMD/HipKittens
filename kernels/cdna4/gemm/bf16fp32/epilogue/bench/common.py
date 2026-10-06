@@ -26,7 +26,9 @@ EPS = 1e-5                         # RMSNorm epsilon, the value rms_reduce uses
 
 # name -> d (model width), d_ff (MLP width), H (query heads), H_KV (key/value heads), Dh (head dim)
 CONFIGS = {
-    "pr1": dict(d=4096, d_ff=11008, H=32, H_KV=8, Dh=128),
+    "llama3-8b": dict(d=4096, d_ff=14336, H=32, H_KV=8, Dh=128),    # Llama-3.1-8B (same shape as Mistral-7B)
+    "llama3-70b": dict(d=8192, d_ff=28672, H=64, H_KV=8, Dh=128),   # Llama-3.1-70B
+    "pr1": dict(d=4096, d_ff=11008, H=32, H_KV=8, Dh=128),          # PR #1's shape: Llama-2-7B widths with GQA; no real model
 }
 M_VALUES = (2048, 4096, 8192)
 
@@ -187,7 +189,7 @@ def load_extension(path, name="tk_kernel"):
 
 def parse_args(description, add=None):
     ap = argparse.ArgumentParser(description=description)
-    ap.add_argument("--config", default="pr1", choices=sorted(CONFIGS))
+    ap.add_argument("--config", default="llama3-8b", choices=sorted(CONFIGS))
     ap.add_argument("--M", default=",".join(map(str, M_VALUES)), help="comma-separated sequence lengths")
     ap.add_argument("--warmup", type=int, default=10)
     ap.add_argument("--iters", type=int, default=50)

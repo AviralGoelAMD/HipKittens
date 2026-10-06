@@ -20,7 +20,8 @@ but no GPU; running needs a gfx950 GPU and PyTorch.
 for m in noop silu scale residual_add rmsnorm_scale swiglu rmsnorm_swiglu rope rmsnorm_rope \
          partialrms residual_rms rms_reduce; do make KERNEL=$m; done
 make -C ..                                  # upstream base GEMM, for ab_noop_vs_base.py
-bench/build_attn.sh 32 8 128 2048 4096 8192 # attention: one build per sequence length (H, H_KV, Dh, M...)
+bench/build_attn.sh 32 8 128 2048 4096 8192 # attention for llama3-8b / pr1 (H, H_KV, Dh, M...)
+bench/build_attn.sh 64 8 128 2048 4096 8192 # attention for llama3-70b
 ```
 
 Build on a local disk: a network filesystem can make each module's build many times slower.
@@ -33,14 +34,22 @@ python3 bench/bench_epilogues.py
 python3 bench/bench_layer.py --phases --full
 ```
 
-Common flags: `--config pr1`, `--M 2048,4096`, `--iters 50`, `--warmup 10`, `--json out.json`,
+Common flags: `--config llama3-8b`, `--M 2048,4096`, `--iters 50`, `--warmup 10`, `--json out.json`,
 `--markdown`. `torch.compile` autotuning can pick different kernels in different processes, so run each
 script in 3 fresh processes and report the spread, not the best run.
 
 ## Config
 
-`pr1`: d = 4096, d_ff = 11008, H = 32, H_KV = 8, Dh = 128, batch 1, causal, M ∈ {2048, 4096, 8192}.
-All configs live in `CONFIGS` in `common.py`.
+Single-sequence causal prefill (batch 1) at M ∈ {2048, 4096, 8192} tokens. Configs, in `CONFIGS` in
+`common.py`:
+
+| `--config` | Model | d | d_ff | H | H_KV | Dh | Attention build |
+|---|---|---:|---:|---:|---:|---:|---|
+| `llama3-8b` (default) | Llama-3.1-8B, same shape as Mistral-7B | 4096 | 14336 | 32 | 8 | 128 | `build_attn.sh 32 8 128 ...` |
+| `llama3-70b` | Llama-3.1-70B | 8192 | 28672 | 64 | 8 | 128 | `build_attn.sh 64 8 128 ...` |
+| `pr1` | PR #1's shape: Llama-2-7B widths with GQA (not a real model) | 4096 | 11008 | 32 | 8 | 128 | `build_attn.sh 32 8 128 ...` |
+
+Both Llama-3.1 models fit on one MI355X (288 GB), so the shapes are unsharded (no tensor parallelism).
 
 ## How timing works
 
