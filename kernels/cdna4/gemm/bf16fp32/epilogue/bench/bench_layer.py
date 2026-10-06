@@ -2,6 +2,9 @@
 
 --phases  each of the five phases timed on its own, on intermediates captured from a full run of the same
           implementation. Each torch phase is compiled separately.
+--full    the whole layer. torch.compile sees the whole layer as one function, so it may fuse across phase
+          boundaries. Also prints the compiled full layer minus the sum of the separately compiled phases
+          (negative = what cross-phase fusion buys torch). --full times the phases too, for that line.
 
 Phases (HK launches): qkv (3), attention (1), out_proj (2), gate_up (1), down (2).
 HK splits RMSNorm across phases: the producer emits r = 1/rms, the consumer applies it. Torch normalizes in
@@ -179,6 +182,27 @@ class Layer:
         g = self.t_gate_up(h)
         return dict(x=x, q=q, k=k, v=v, o=o, h=h, g=g)
 
+    # ---- full layer ----
+    def hk_layer(self, x, r):
+        q, k, v = self.hk_qkv(x, r)
+        o = self.hk_attention(q, k, v)
+        h, r_mlp = self.hk_out_proj(o, x)
+        g = self.hk_gate_up(h, r_mlp)
+        return self.hk_down(g, h)                                   # x_out, r_next
+
+    def t_layer(self, x):
+        q, k, v = self.t_qkv(x)
+        o = self.t_attention(q, k, v)
+        h = self.t_out_proj(o, x)
+        g = self.t_gate_up(h)
+        return self.t_down(g, h)                                    # x_out, r_next
+
+    def ref_layer(self, x):
+        q, k, v = self.ref_qkv(x)
+        o = self.ref_attention(q, k, v)
+        h, _ = self.ref_out_proj(o, x)
+        return self.ref_down(self.ref_gate_up(h), h)                # fp32 x_out, r_next
+
 
 @dataclasses.dataclass
 class Phase:
@@ -250,11 +274,43 @@ PHASE_COLUMNS = [("M", "M", "d"), ("phase", "phase", ""), ("HK launches", "hk_la
                  ("status", "status", "")]
 
 
+def run_full(L, timer, phase_rows):
+    hk_fn = lambda: L.hk_layer(L.x, L.r_attn)
+    eager = lambda: L.t_layer(L.x)
+    compiled = torch.compile(L.t_layer, **COMPILE)
+    comp = lambda: compiled(L.x)
+    want = L.ref_layer(L.x)
+    ok_hk, rel_hk = common.layer_check(hk_fn(), want)
+    ok_eager, rel_eager = common.layer_check(eager(), want)
+    ok_comp, rel_comp = common.layer_check(comp(), want)            # first call compiles + autotunes, untimed
+    ok = ok_hk and ok_eager and ok_comp
+    row = dict(M=L.M, rel_hk=rel_hk, rel_eager=rel_eager, rel_compile=rel_comp, status="PASS" if ok else "FAIL")
+    if ok:
+        t_hk, t_eager, t_comp = timer(hk_fn), timer(eager), timer(comp)
+        row.update(**common.ms_fields("hk", t_hk), **common.ms_fields("eager", t_eager),
+                   **common.ms_fields("compile", t_comp),
+                   eager_x=t_eager.median / t_hk.median, compile_x=t_comp.median / t_hk.median)
+        phase_sum = next(r for r in phase_rows if r["M"] == L.M and r["phase"] == "sum")
+        if phase_sum["status"] == "PASS":
+            row["compile_full_minus_phases_ms"] = t_comp.median - phase_sum["compile_ms"]
+    print(f"  M={L.M} full layer: {row['status']}", flush=True)
+    return row
+
+
+FULL_COLUMNS = [("M", "M", "d"), ("HK ms", "hk_ms", ".3f"), ("eager ms", "eager_ms", ".3f"),
+                ("compile ms", "compile_ms", ".3f"), ("eager/HK", "eager_x", ".2f"), ("compile/HK", "compile_x", ".2f"),
+                ("compile full - phases ms", "compile_full_minus_phases_ms", "+.3f"),
+                ("rel HK", "rel_hk", ".1e"), ("rel compile", "rel_compile", ".1e"), ("status", "status", "")]
+
+
 def main():
-    args = common.parse_args("Goals 2-3: forward layer, HK vs eager vs torch.compile",
-                             add=lambda ap: ap.add_argument("--phases", action="store_true"))
-    if not args.phases:
-        raise SystemExit("choose --phases")
+    def flags(ap):
+        ap.add_argument("--phases", action="store_true", help="per-phase table (goal 2)")
+        ap.add_argument("--full", action="store_true", help="full-layer table (goal 3)")
+
+    args = common.parse_args("Goals 2-3: forward layer, HK vs eager vs torch.compile", add=flags)
+    if not (args.phases or args.full):
+        raise SystemExit("choose --phases and/or --full")
     common.require_epilogue_modules(MODULES)
     torch.manual_seed(0)
     torch._dynamo.config.cache_size_limit = 64
@@ -262,18 +318,23 @@ def main():
     backend, native = choose_sdpa(cfg["H"], cfg["H_KV"], cfg["Dh"])
     print(f"SDPA baseline: {backend}, native GQA: {native}")
     timer = common.Timer(args.warmup, args.iters)
-    rows = []
+    phase_rows, full_rows = [], []
     for M in args.M:
         L = Layer(cfg, M, load_gqa(cfg, M), native)
-        rows += run_phases(L, timer)
+        phase_rows += run_phases(L, timer)
+        if args.full:
+            full_rows.append(run_full(L, timer, phase_rows))
         del L
         torch.cuda.empty_cache()
-    common.print_table(f"Layer phases ({args.config}, cold cache; SDPA {backend}, native GQA {native})",
-                       PHASE_COLUMNS, rows, args.markdown)
+    title = f"({args.config}, cold cache; SDPA {backend}, native GQA {native})"
+    if args.phases:
+        common.print_table(f"Layer phases {title}", PHASE_COLUMNS, phase_rows, args.markdown)
+    if args.full:
+        common.print_table(f"Full layer {title}", FULL_COLUMNS, full_rows, args.markdown)
     if args.json:
-        common.write_json(args.json, "bench_layer --phases", args.config, rows,
+        common.write_json(args.json, "bench_layer", args.config, phase_rows + full_rows,
                           extra=dict(sdpa_backend=backend, native_gqa=native))
-    raise SystemExit(common.exit_code(rows))
+    raise SystemExit(common.exit_code(phase_rows + full_rows))
 
 
 if __name__ == "__main__":
