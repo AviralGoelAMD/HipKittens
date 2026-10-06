@@ -256,14 +256,14 @@ def residual_rms(x, w, residual):
 def prepare_qkv(Wq, Wk, Wv, gamma):
     """Fuse the attention projection weights into one operand for hk.qkv, once. Wq [K, Nq], Wk and Wv [K, Nkv]:
     natural bf16. gamma (bf16 [K], the attention norm's gain) is folded in, as for "rmsnorm_rope". Nq and Nkv must
-    be even (no RoPE pair may straddle Q|K or K|V); Nq + 2 * Nkv must be a multiple of 256."""
+    each be multiples of 256, like any hk weight, so each part is a shape the separate calls also accept."""
     _require(Wq, "Wq", BF16, (None, None))
     K, Nq = Wq.shape
     _require(Wk, "Wk", BF16, (K, None), Wq.device)
     Nkv = Wk.shape[1]
     _require(Wv, "Wv", BF16, (K, Nkv), Wq.device)
-    if Nq % 2 or Nkv % 2:
-        raise ValueError(f"Wq and Wk/Wv need an even number of columns, got Nq={Nq}, Nkv={Nkv}")
+    if Nq % 256 or Nkv % 256:
+        raise ValueError(f"Wq and Wk/Wv need N % 256 == 0, got Nq={Nq}, Nkv={Nkv}")
     return QkvWeight(prepare(torch.cat([Wq, Wk, Wv], dim=1), layout="rope", gamma=gamma), Nq, Nkv)
 
 

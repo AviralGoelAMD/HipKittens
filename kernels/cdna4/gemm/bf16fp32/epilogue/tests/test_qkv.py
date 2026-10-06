@@ -41,12 +41,12 @@ def test_rejects_mismatched_kv():
         hk.prepare_qkv(Wq, Wk, weights(128, 512, 512)[1], gamma=pow2_gamma(128))
 
 
-def test_rejects_odd_split():
-    # Nq odd: a RoPE pair would straddle the Q|K boundary
+def test_rejects_unaligned_split():
+    # Nq + 2 * Nkv = 512 passes hk.prepare's N % 256, but Q and K/V alone would not: refuse it
     K = 128
-    Wq = torch.zeros(K, 511, dtype=torch.bfloat16, device=DEV)
-    Wkv = torch.zeros(K, 257, dtype=torch.bfloat16, device=DEV)
-    with pytest.raises(ValueError, match="even"):
+    Wq = torch.zeros(K, 384, dtype=torch.bfloat16, device=DEV)
+    Wkv = torch.zeros(K, 64, dtype=torch.bfloat16, device=DEV)
+    with pytest.raises(ValueError, match="N % 256"):
         hk.prepare_qkv(Wq, Wkv, Wkv, gamma=pow2_gamma(K))
 
 
