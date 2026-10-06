@@ -8,6 +8,9 @@ Prepare static weights once, then call:
     v  = hk.matmul(x, hk.prepare(Wv, gamma=g), epilogue="rmsnorm", r=r)   # rmsnorm(x, g) @ Wv
     r  = hk.inv_rms(x, hk.prepare(W2))                   # [M] fp32 = 1 / rms(x @ W2)
     h, r = hk.residual_rms(x, hk.prepare(Wo), residual)  # h = x @ Wo + residual, r = 1 / rms(h)
+    wqkv = hk.prepare_qkv(Wq, Wk, Wv, gamma=g)            # fused attention projections, once
+    cs  = hk.prepare_qkv_rope_table(cos_sin_q, cos_sin_k) # V gets the identity rotation
+    q, k, v = hk.qkv(x, wqkv, r=r, cos_sin=cs)            # one GEMM launch for all three
     hk.available()                                       # {epilogue: [argument names]}
 
 Every call launches on torch.cuda.current_stream() and does not synchronize. Inputs are never
@@ -35,6 +38,14 @@ class PreparedWeight:
 class RopeTable:
     """An [M, N] bf16 interleaved [cos, sin] table, columns permuted like a rope-layout weight."""
     tensor: torch.Tensor
+
+
+@dataclass(frozen=True)
+class QkvWeight:
+    """[Wq | Wk | Wv] from hk.prepare_qkv: one rope-layout, gamma-folded weight plus the column split."""
+    weight: PreparedWeight
+    q_cols: int
+    kv_cols: int
 
 
 @dataclass(frozen=True)
@@ -240,3 +251,41 @@ def residual_rms(x, w, residual):
         importlib.import_module("tk_residual_rms").dispatch(x, w.tensor, h, residual, partials, stream)
         importlib.import_module("tk_rms_reduce").dispatch(partials, r, stream)
     return h, r
+
+
+def prepare_qkv(Wq, Wk, Wv, gamma):
+    """Fuse the attention projection weights into one operand for hk.qkv, once. Wq [K, Nq], Wk and Wv [K, Nkv]:
+    natural bf16. gamma (bf16 [K], the attention norm's gain) is folded in, as for "rmsnorm_rope". Nq and Nkv must
+    be even (no RoPE pair may straddle Q|K or K|V); Nq + 2 * Nkv must be a multiple of 256."""
+    _require(Wq, "Wq", BF16, (None, None))
+    K, Nq = Wq.shape
+    _require(Wk, "Wk", BF16, (K, None), Wq.device)
+    Nkv = Wk.shape[1]
+    _require(Wv, "Wv", BF16, (K, Nkv), Wq.device)
+    if Nq % 2 or Nkv % 2:
+        raise ValueError(f"Wq and Wk/Wv need an even number of columns, got Nq={Nq}, Nkv={Nkv}")
+    return QkvWeight(prepare(torch.cat([Wq, Wk, Wv], dim=1), layout="rope", gamma=gamma), Nq, Nkv)
+
+
+def prepare_qkv_rope_table(cos_sin_q, cos_sin_k):
+    """The [cos, sin] table for hk.qkv, once per sequence length. cos_sin_q [M, Nq] and cos_sin_k [M, Nkv] are
+    natural interleaved bf16 tables, as for hk.prepare_rope_table. V's columns get cos = 1, sin = 0, so RoPE
+    leaves V unrotated."""
+    _require(cos_sin_q, "cos_sin_q", BF16, (None, None))
+    _require(cos_sin_k, "cos_sin_k", BF16, (cos_sin_q.shape[0], None), cos_sin_q.device)
+    identity = torch.zeros_like(cos_sin_k)
+    identity[:, 0::2] = 1
+    return prepare_rope_table(torch.cat([cos_sin_q, cos_sin_k, identity], dim=1))
+
+
+def qkv(x, w, r, cos_sin):
+    """q, k, v = RoPE(r * (x @ Wq)), RoPE(r * (x @ Wk)), r * (x @ Wv), gamma folded into all three, as ONE GEMM
+    launch ("rmsnorm_rope" over [Wq | Wk | Wv]); then q, k and v are copied out as contiguous bf16 [M, Nq],
+    [M, Nkv], [M, Nkv] (attention takes contiguous inputs). w from hk.prepare_qkv, cos_sin from
+    hk.prepare_qkv_rope_table, r = 1 / rms(x) fp32 [M]. q and k equal separate "rmsnorm_rope" calls bitwise; v
+    is within one bf16 step of the "rmsnorm" call (this store rounds to nearest, that one truncates)."""
+    if not isinstance(w, QkvWeight):
+        raise TypeError(f"w must come from hk.prepare_qkv(...), got {type(w).__name__}")
+    out = matmul(x, w.weight, "rmsnorm_rope", r=r, cos_sin=cos_sin)
+    nq, nkv = w.q_cols, w.kv_cols
+    return out[:, :nq].contiguous(), out[:, nq:nq + nkv].contiguous(), out[:, nq + nkv:].contiguous()
