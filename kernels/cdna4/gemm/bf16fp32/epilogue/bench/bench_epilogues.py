@@ -1,4 +1,4 @@
-"""Goal 1: each fused epilogue against PyTorch eager, on the layer GEMM where it belongs.
+"""Each fused epilogue against PyTorch eager, on the layer GEMM where it belongs.
 
 Arms (all cold cache):
   HK           one fused HipKittens call (hk.matmul, hk.inv_rms or hk.residual_rms)
@@ -143,7 +143,7 @@ def run_row(name, gemm, M, K, N, Dh, timer):
 
 
 def main():
-    args = common.parse_args("Goal 1: fused epilogues vs PyTorch eager")
+    args = common.parse_args("Fused epilogues vs PyTorch eager")
     common.require_epilogue_modules(MODULES)
     torch.manual_seed(0)
     timer = common.Timer(args.warmup, args.iters)

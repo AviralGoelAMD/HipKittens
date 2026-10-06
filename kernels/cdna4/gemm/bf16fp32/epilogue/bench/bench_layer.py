@@ -1,4 +1,4 @@
-"""Goals 2 and 3: one pre-norm GQA Transformer forward layer, HK vs PyTorch eager vs torch.compile.
+"""One pre-norm GQA Transformer forward layer: HK vs PyTorch eager vs torch.compile.
 
 --phases  each of the five phases timed on its own, on intermediates captured from a full run of the same
           implementation. Each torch phase is compiled separately.
@@ -12,7 +12,8 @@ the consumer and computes r_next at the end of the layer, so each side does each
 HK layer's input r_attn = 1/rms(x) is computed once, outside timing (a previous layer would emit it).
 Per-phase times therefore do not line up op-for-op; the phase sums do.
 
-Build first: bench/build.sh (the epilogue modules in MODULES and the attention kernel for each M).
+Build first: make KERNEL=<m> in the epilogue directory for every m in MODULES, and the attention kernel per
+M with bench/build_attn.sh <H> <H_KV> <Dh> <M>...
 """
 import dataclasses
 
@@ -52,10 +53,10 @@ def choose_sdpa(H, H_KV, Dh):
 
 
 def load_gqa(cfg, M):
-    """The gqa_causal build for this shape. build.sh gives every build its own module name; Python returns the
-    first-loaded module for any later load of the same name, so a shared name would run the wrong shape."""
+    """The gqa_causal build for this shape. build_attn.sh gives every build its own module name; Python returns
+    the first-loaded module for any later load of the same name, so a shared name would run the wrong shape."""
     name = f"tk_attn_H{cfg['H']}_KV{cfg['H_KV']}_D{cfg['Dh']}_N{M}"
-    hint = f"{common.BENCH / 'build.sh'} --config <config> --M {M}"
+    hint = f"{common.BENCH / 'build_attn.sh'} {cfg['H']} {cfg['H_KV']} {cfg['Dh']} {M}"
     return common.load_extension(common.find_extension(common.BENCH / "attn_build", name, hint), name=name)
 
 
@@ -305,10 +306,10 @@ FULL_COLUMNS = [("M", "M", "d"), ("HK ms", "hk_ms", ".3f"), ("eager ms", "eager_
 
 def main():
     def flags(ap):
-        ap.add_argument("--phases", action="store_true", help="per-phase table (goal 2)")
-        ap.add_argument("--full", action="store_true", help="full-layer table (goal 3)")
+        ap.add_argument("--phases", action="store_true", help="per-phase table")
+        ap.add_argument("--full", action="store_true", help="full-layer table")
 
-    args = common.parse_args("Goals 2-3: forward layer, HK vs eager vs torch.compile", add=flags)
+    args = common.parse_args("Forward layer: HK vs eager vs torch.compile", add=flags)
     if not (args.phases or args.full):
         raise SystemExit("choose --phases and/or --full")
     common.require_epilogue_modules(MODULES)
