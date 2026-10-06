@@ -17,6 +17,7 @@ From this directory's parent (the epilogue directory). Building needs a ROCm `hi
 but no GPU; running needs a gfx950 GPU and PyTorch.
 
 ```bash
+export THUNDERKITTENS_ROOT=$(cd ../../../../.. && pwd)   # this repository; an inherited root breaks every make
 for m in noop silu scale residual_add rmsnorm_scale swiglu rmsnorm_swiglu rope rmsnorm_rope \
          partialrms residual_rms rms_reduce; do make KERNEL=$m; done
 make -C ..                                  # upstream base GEMM, for ab_noop_vs_base.py
